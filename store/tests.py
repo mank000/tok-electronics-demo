@@ -157,6 +157,11 @@ class ShopTests(TestCase):
         for name in ("catalog", "basket", "checkout"):
             self.assertEqual(self.client.get(reverse(name)).status_code, 200)
 
+    def test_category_sort_form_keeps_selected_category(self):
+        response = self.client.get(reverse("catalog"), {"category": "tech", "sort": "price"})
+        self.assertContains(response, 'name="category" value="tech"')
+        self.assertContains(response, "Товар")
+
     def test_csrf_rejects_null_origin_and_accepts_local_origin(self):
         client = Client(enforce_csrf_checks=True)
         client.get(reverse("checkout"), HTTP_HOST="localhost:8008")
