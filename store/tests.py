@@ -1,14 +1,17 @@
 import hashlib
 import hmac
 import json
+import tempfile
 import time
 import uuid
 from decimal import Decimal
 from unittest.mock import Mock, patch
 from urllib.parse import urlencode
+from PIL import Image
+from django.core.management import call_command
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
-from .models import BotUser, Category, Notification, Order, PaymentAttempt, PaymentEvent, Product
+from .models import BotUser, Category, Notification, Order, PaymentAttempt, PaymentEvent, Product, ProductImage
 from .security import TelegramAuthError, verify_init_data
 from .services import flush_notifications, process_payment_event, queue_order_changed, signed_event
 
@@ -161,3 +164,18 @@ class ShopTests(TestCase):
         data = {"name": "Покупатель", "phone": "+7 900 123 45 67", "delivery": "pickup", "address": "", "comment": "", "payment_method": "online", "consent": "on", "cart": json.dumps({str(self.product.pk): 1}), "checkout_key": str(uuid.uuid4()), "csrfmiddlewaretoken": csrf_token}
         self.assertEqual(client.post(reverse("checkout"), data, HTTP_HOST="localhost:8008", HTTP_ORIGIN="null").status_code, 403)
         self.assertEqual(client.post(reverse("checkout"), data, HTTP_HOST="localhost:8008", HTTP_ORIGIN="http://localhost:8008").status_code, 302)
+
+
+class SeedTests(TestCase):
+    def test_seed_is_idempotent_and_images_are_local_webp(self):
+        with tempfile.TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            call_command("seed_catalog", verbosity=0)
+            call_command("seed_catalog", verbosity=0)
+            self.assertEqual(Product.objects.count(), 24)
+            self.assertEqual(ProductImage.objects.count(), 26)
+            self.assertTrue(all(product.images.exists() for product in Product.objects.all()))
+            image = ProductImage.objects.first()
+            with Image.open(image.image.path) as source, Image.open(image.thumb.path) as thumb:
+                self.assertEqual(source.format, "WEBP")
+                self.assertEqual(thumb.format, "WEBP")
+                self.assertLessEqual(max(thumb.size), 480)

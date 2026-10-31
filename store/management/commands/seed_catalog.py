@@ -1,7 +1,7 @@
-import io
-from PIL import Image, ImageDraw, ImageFont
+from pathlib import Path
 from django.core.files.base import ContentFile
 from django.core.management.base import BaseCommand
+from django.db.models import F
 from store.models import Category, Product, ProductImage
 
 
@@ -17,43 +17,7 @@ DATA = [
     ("Аксессуары", "accessories", "✦", [
         ("Charge 65W", 4490), ("Power Bank 20K", 5990), ("Magnetic Stand", 2490), ("Cable C 2m", 1490)]),
 ]
-PALETTES = [("#e2eef5", "#315d78"), ("#eee6fa", "#5c4682"), ("#fae9df", "#8c5942"), ("#e6f1e9", "#3a6855"), ("#f1ebdf", "#736247")]
-
-
-def illustration(name, section, index, variant):
-    """Original generated vector-like product illustration; no third-party images."""
-    bg, ink = PALETTES[index % len(PALETTES)]
-    im = Image.new("RGB", (900, 900), bg)
-    d = ImageDraw.Draw(im)
-    d.ellipse((130, 125, 770, 765), fill="#ffffff")
-    off = variant * 20
-    if section == "phones":
-        d.rounded_rectangle((330+off, 170, 570+off, 710), radius=40, fill=ink)
-        d.rounded_rectangle((345+off, 195, 555+off, 680), radius=25, fill="#d4e9e9")
-        d.ellipse((433+off, 205, 467+off, 239), fill=ink)
-    elif section == "laptops":
-        d.rounded_rectangle((230, 270+off, 670, 580+off), radius=15, fill=ink)
-        d.rectangle((245, 285+off, 655, 560+off), fill="#c9e1e9")
-        d.polygon([(180, 595+off), (720, 595+off), (760, 640+off), (140, 640+off)], fill=ink)
-    elif section == "audio":
-        d.arc((280, 250, 620, 620), 180, 360, fill=ink, width=50)
-        d.rounded_rectangle((265, 420, 355, 635), radius=30, fill=ink)
-        d.rounded_rectangle((545, 420, 635, 635), radius=30, fill=ink)
-    elif section == "smart-home":
-        d.rounded_rectangle((270, 300, 630, 650), radius=100, fill=ink)
-        d.ellipse((340, 360, 560, 580), fill="#d4e9e9")
-        d.ellipse((420, 440, 480, 500), fill=ink)
-    else:
-        d.rounded_rectangle((260, 280, 640, 620), radius=80, fill=ink)
-        d.rounded_rectangle((330, 340, 570, 560), radius=45, fill="#d4e9e9")
-    try:
-        font = ImageFont.truetype("DejaVuSans.ttf", 30)
-    except OSError:
-        font = ImageFont.load_default()
-    d.text((80, 795), name, fill=ink, font=font)
-    out = io.BytesIO()
-    im.save(out, format="WEBP", quality=83)
-    return ContentFile(out.getvalue(), name=f"demo-{section}-{index}-{variant}.webp")
+PHOTO_ROOT = Path(__file__).resolve().parents[2] / "seed_photos"
 
 
 class Command(BaseCommand):
@@ -72,9 +36,17 @@ class Command(BaseCommand):
                 })
                 if created:
                     count += 1
-                if not product.images.exists():
-                    for variant in range(2 if index % 3 == 0 else 1):
-                        image = ProductImage(product=product, alt=f"Иллюстрация {name}", order=variant)
-                        image.image = illustration(name, slug, section_index, variant)
-                        image.save()
+                images = list(product.images.all())
+                demo_photo = any(image.alt.startswith("Демо-фото ") and "ракурс" not in image.alt for image in images)
+                add_photo = not demo_photo and (not images or all(image.alt.startswith("Иллюстрация ") for image in images))
+                if add_photo:
+                    shift = 2 if slug in ("phones", "laptops") and index == 0 else 1
+                    ProductImage.objects.filter(product=product).update(order=F("order") + shift)
+                    image = ProductImage(product=product, alt=f"Демо-фото {name} (синтетическое)", order=0)
+                    image.image = ContentFile((PHOTO_ROOT / f"{slug}.webp").read_bytes(), name=f"{slug}.webp")
+                    image.save()
+                if slug in ("phones", "laptops") and index == 0 and (add_photo or demo_photo) and not any("ракурс 2" in image.alt for image in images):
+                    image = ProductImage(product=product, alt=f"Демо-фото {name}, ракурс 2 (синтетическое)", order=1)
+                    image.image = ContentFile((PHOTO_ROOT / f"{slug}-detail.webp").read_bytes(), name=f"{slug}-detail.webp")
+                    image.save()
         self.stdout.write(self.style.SUCCESS(f"Каталог готов: {Product.objects.count()} товаров, добавлено {count}."))
