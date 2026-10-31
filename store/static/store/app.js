@@ -27,6 +27,7 @@
     location.replace(`/product/${encodeURIComponent(slug)}/`);
   }
   const storageKey = 'tok-cart-v1';
+  if (location.pathname.startsWith('/order/') && new URLSearchParams(location.search).has('created')) { localStorage.removeItem(storageKey); history.replaceState(null, '', location.pathname); }
   function cart() { try { const value = JSON.parse(localStorage.getItem(storageKey) || '{}'); return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; } catch { return {}; } }
   function saveCart(value) { localStorage.setItem(storageKey, JSON.stringify(value)); updateCount(); }
   function updateCount() { document.getElementById('cart-count').textContent = Object.values(cart()).reduce((sum, n) => sum + (+n || 0), 0); }

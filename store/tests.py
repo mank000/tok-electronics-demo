@@ -141,6 +141,15 @@ class ShopTests(TestCase):
         self.assertEqual(self.client.get(reverse("product", args=[self.product.slug])).status_code, 404)
         self.assertEqual(self.checkout().status_code, 400)
 
+    def test_preorder_wish_is_saved_and_not_added_to_checkout(self):
+        self.product.availability = "preorder"
+        self.product.save()
+        self.assertEqual(self.checkout().status_code, 400)
+        response = self.client.post(reverse("wish", args=[self.product.slug]), {"name": "Тест", "contact": "+7 900 000 00 00"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.product.wishes.count(), 1)
+        self.assertTrue(Notification.objects.filter(kind="shop", text__contains="Хочу такой").exists())
+
     def test_catalog_basket_checkout_pages(self):
         for name in ("catalog", "basket", "checkout"):
             self.assertEqual(self.client.get(reverse(name)).status_code, 200)

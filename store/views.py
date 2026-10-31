@@ -100,7 +100,7 @@ def checkout(request):
     known = request.session.get("checkout_tokens", {})
     if existing:
         if known.get(str(key)) == existing.access_token:
-            return redirect("order", token=existing.access_token)
+            return redirect(reverse("order", args=[existing.access_token]) + "?created=1")
         return HttpResponse("Повторное оформление уже обработано", status=409)
     data = form.cleaned_data
     try:
@@ -118,7 +118,7 @@ def checkout(request):
         return HttpResponse("Повторное оформление уже обработано", status=409)
     known[str(key)] = order.access_token
     request.session["checkout_tokens"] = known
-    return redirect("order", token=order.access_token)
+    return redirect(reverse("order", args=[order.access_token]) + "?created=1")
 
 
 def owned_order(request, token):
