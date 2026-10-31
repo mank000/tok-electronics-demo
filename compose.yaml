@@ -1,0 +1,41 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-electroshop}
+      POSTGRES_USER: ${POSTGRES_USER:-electroshop}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 3s
+      retries: 20
+  web:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL_HOST: db
+    command: sh -c "python manage.py migrate && gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2"
+    ports:
+      - "127.0.0.1:8008:8000"
+    volumes:
+      - media:/app/media
+    depends_on:
+      db:
+        condition: service_healthy
+  bot:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL_HOST: db
+    command: python manage.py runbot
+    volumes:
+      - media:/app/media
+    depends_on:
+      web:
+        condition: service_started
+    profiles: ["bot"]
+volumes:
+  pgdata:
+  media:
