@@ -70,7 +70,7 @@ class ProductImage(models.Model):
         verbose_name_plural = "Изображения товара"
 
     def save(self, *args, **kwargs):
-        if self.image and (not self.pk or "image" in (kwargs.get("update_fields") or [])):
+        if self.image and not self.image._committed:
             self.image.open()
             source = Image.open(self.image).convert("RGB")
             for field, size, quality in (("image", (1200, 1200), 82), ("thumb", (480, 480), 76)):
@@ -85,6 +85,7 @@ class ProductImage(models.Model):
 class BotUser(models.Model):
     telegram_id = models.BigIntegerField("Telegram ID", unique=True)
     chat_id = models.BigIntegerField("Чат с ботом")
+    phone = models.CharField("Телефон из разрешённого контакта", max_length=32, blank=True)
     started_at = models.DateTimeField("Разрешил сообщения", auto_now_add=True)
 
     class Meta:
@@ -125,6 +126,7 @@ class Order(models.Model):
     total = models.DecimalField("Итог, ₽", max_digits=11, decimal_places=2)
     status = models.CharField("Статус", max_length=12, choices=Status.choices, default=Status.NEW)
     payment_state = models.CharField("Состояние оплаты", max_length=12, choices=[("pending", "Ожидается"), ("paid", "Успешно"), ("declined", "Отказ"), ("receipt", "При получении")], default="pending")
+    consent_at = models.DateTimeField("Согласие получено", default=timezone.now)
     track_number = models.CharField("Трек-номер", max_length=100, blank=True)
     created_at = models.DateTimeField("Создан", auto_now_add=True)
     updated_at = models.DateTimeField("Обновлён", auto_now=True)
