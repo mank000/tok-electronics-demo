@@ -62,10 +62,22 @@ class IntegrationSettingsForm(forms.ModelForm):
         help_text="Отдельный случайный секрет длиной не менее 32 символов. Пустое поле сохраняет текущий.",
     )
     clear_payment_webhook_secret = forms.BooleanField(label="Удалить значение из админки (вернуться к .env)", required=False)
+    telegram_login_client_secret = forms.CharField(
+        label="Client Secret Telegram Login", required=False,
+        widget=forms.PasswordInput(render_value=False),
+        help_text="Пустое поле сохраняет текущий секрет; значение не показывается повторно.",
+    )
+    clear_telegram_login_client_secret = forms.BooleanField(label="Удалить значение из админки (вернуться к .env)", required=False)
+    yookassa_secret_key = forms.CharField(
+        label="Секретный ключ тестовой ЮKassa", required=False,
+        widget=forms.PasswordInput(render_value=False),
+        help_text="Только ключ тестового магазина. Пустое поле сохраняет текущий ключ; значение не показывается повторно.",
+    )
+    clear_yookassa_secret_key = forms.BooleanField(label="Удалить значение из админки (вернуться к .env)", required=False)
 
     class Meta:
         model = IntegrationSettings
-        fields = ("bot_username", "bot_app_short_name", "public_base_url", "shop_chat_id")
+        fields = ("bot_username", "bot_app_short_name", "public_base_url", "shop_chat_id", "telegram_login_client_id", "yookassa_shop_id")
 
     def clean_bot_token(self):
         value = self.cleaned_data["bot_token"].strip()
@@ -99,11 +111,19 @@ class IntegrationSettingsForm(forms.ModelForm):
 
     def clean(self):
         data = super().clean()
-        for value, clear in (("bot_token", "clear_bot_token"), ("payment_webhook_secret", "clear_payment_webhook_secret")):
+        for value, clear in (
+            ("bot_token", "clear_bot_token"),
+            ("payment_webhook_secret", "clear_payment_webhook_secret"),
+            ("telegram_login_client_secret", "clear_telegram_login_client_secret"),
+            ("yookassa_secret_key", "clear_yookassa_secret_key"),
+        ):
             if data.get(value) and data.get(clear):
                 self.add_error(clear, "Нельзя одновременно заменить и удалить значение.")
         if data.get("payment_webhook_secret") and len(data["payment_webhook_secret"]) < 32:
             self.add_error("payment_webhook_secret", "Нужно не менее 32 символов.")
+        for field in ("telegram_login_client_secret", "yookassa_secret_key"):
+            if data.get(field) and any(character.isspace() for character in data[field]):
+                self.add_error(field, "Секрет не должен содержать пробелы.")
         return data
 
 
@@ -112,15 +132,17 @@ class IntegrationSettingsAdmin(ResponsiveAdmin):
     form = IntegrationSettingsForm
     fieldsets = (
         ("Бот и Mini App", {"fields": ("bot_token_status", "bot_token", "clear_bot_token", "bot_username", "bot_app_short_name", "public_base_url", "shop_chat_id")}),
+        ("Вход через Telegram Login", {"fields": ("telegram_login_client_id", "telegram_login_secret_status", "telegram_login_client_secret", "clear_telegram_login_client_secret")}),
         ("Учебная оплата", {"fields": ("payment_secret_status", "payment_webhook_secret", "clear_payment_webhook_secret")}),
+        ("Тестовая ЮKassa", {"fields": ("yookassa_shop_id", "yookassa_secret_status", "yookassa_secret_key", "clear_yookassa_secret_key")}),
     )
-    readonly_fields = ("bot_token_status", "payment_secret_status")
+    readonly_fields = ("bot_token_status", "payment_secret_status", "telegram_login_secret_status", "yookassa_secret_status")
 
-    @method_decorator(sensitive_post_parameters("bot_token", "payment_webhook_secret"))
+    @method_decorator(sensitive_post_parameters("bot_token", "payment_webhook_secret", "telegram_login_client_secret", "yookassa_secret_key"))
     def add_view(self, request, form_url="", extra_context=None):
         return super().add_view(request, form_url, extra_context)
 
-    @method_decorator(sensitive_post_parameters("bot_token", "payment_webhook_secret"))
+    @method_decorator(sensitive_post_parameters("bot_token", "payment_webhook_secret", "telegram_login_client_secret", "yookassa_secret_key"))
     def change_view(self, request, object_id, form_url="", extra_context=None):
         return super().change_view(request, object_id, form_url, extra_context)
 
@@ -136,10 +158,24 @@ class IntegrationSettingsAdmin(ResponsiveAdmin):
             return "Сохранён в админке"
         return "Задан в .env" if settings.PAYMENT_WEBHOOK_SECRET else "Не задан"
 
+    @admin.display(description="Client Secret Telegram Login")
+    def telegram_login_secret_status(self, obj):
+        if obj and obj.telegram_login_secret_ciphertext:
+            return "Сохранён в админке"
+        return "Задан в .env" if settings.TELEGRAM_LOGIN_CLIENT_SECRET else "Не задан"
+
+    @admin.display(description="Секретный ключ ЮKassa")
+    def yookassa_secret_status(self, obj):
+        if obj and obj.yookassa_secret_ciphertext:
+            return "Сохранён в админке"
+        return "Задан в .env" if settings.YOOKASSA_SECRET_KEY else "Не задан"
+
     def save_model(self, request, obj, form, change):
         for value, clear, field in (
             ("bot_token", "clear_bot_token", "bot_token_ciphertext"),
             ("payment_webhook_secret", "clear_payment_webhook_secret", "payment_secret_ciphertext"),
+            ("telegram_login_client_secret", "clear_telegram_login_client_secret", "telegram_login_secret_ciphertext"),
+            ("yookassa_secret_key", "clear_yookassa_secret_key", "yookassa_secret_ciphertext"),
         ):
             if form.cleaned_data[clear]:
                 setattr(obj, field, "")

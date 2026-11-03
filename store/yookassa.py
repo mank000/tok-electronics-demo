@@ -3,9 +3,9 @@
 from decimal import Decimal, InvalidOperation
 
 import requests
-from django.conf import settings
 from django.db import transaction
 
+from .integrations import get_runtime_config
 from .models import Order, PaymentAttempt, PaymentEvent
 from .services import PaymentError, queue_buyer, queue_shop
 
@@ -14,9 +14,10 @@ API = "https://api.yookassa.ru/v3/payments"
 
 
 def credentials():
-    if not settings.YOOKASSA_SHOP_ID or not settings.YOOKASSA_SECRET_KEY:
+    config = get_runtime_config()
+    if not config.yookassa_shop_id or not config.yookassa_secret_key:
         raise PaymentError("Тестовый магазин ЮKassa не настроен")
-    return settings.YOOKASSA_SHOP_ID, settings.YOOKASSA_SECRET_KEY
+    return config.yookassa_shop_id, config.yookassa_secret_key
 
 
 def create_payment(order, attempt, return_url):

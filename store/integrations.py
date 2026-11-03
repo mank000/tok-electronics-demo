@@ -31,6 +31,10 @@ class RuntimeConfig:
     public_base_url: str
     shop_chat_id: str
     payment_webhook_secret: str
+    telegram_login_client_id: str
+    telegram_login_client_secret: str
+    yookassa_shop_id: str
+    yookassa_secret_key: str
 
 
 def get_runtime_config():
@@ -43,4 +47,13 @@ def get_runtime_config():
         public_base_url=(saved.public_base_url if saved else "") or settings.PUBLIC_BASE_URL,
         shop_chat_id=(saved.shop_chat_id if saved else "") or settings.SHOP_CHAT_ID,
         payment_webhook_secret=decrypt_secret(saved.payment_secret_ciphertext) if saved and saved.payment_secret_ciphertext else settings.PAYMENT_WEBHOOK_SECRET,
+        telegram_login_client_id=(saved.telegram_login_client_id if saved else "") or settings.TELEGRAM_LOGIN_CLIENT_ID,
+        telegram_login_client_secret=decrypt_secret(saved.telegram_login_secret_ciphertext) if saved and saved.telegram_login_secret_ciphertext else settings.TELEGRAM_LOGIN_CLIENT_SECRET,
+        yookassa_shop_id=(saved.yookassa_shop_id if saved else "") or settings.YOOKASSA_SHOP_ID,
+        yookassa_secret_key=decrypt_secret(saved.yookassa_secret_ciphertext) if saved and saved.yookassa_secret_ciphertext else settings.YOOKASSA_SECRET_KEY,
     )
+
+
+def yookassa_configured():
+    config = get_runtime_config()
+    return bool(config.yookassa_shop_id and config.yookassa_secret_key)
