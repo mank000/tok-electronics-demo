@@ -1,12 +1,21 @@
 import os
 from pathlib import Path
+from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "unsafe-local-only")
 DEBUG = os.environ.get("DJANGO_DEBUG", "0") == "1"
+PRODUCTION = os.environ.get("DJANGO_PRODUCTION", "0") == "1"
 ALLOWED_HOSTS = [x.strip() for x in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if x.strip()]
 CSRF_TRUSTED_ORIGINS = [x.strip() for x in os.environ.get("DJANGO_CSRF_TRUSTED_ORIGINS", "").split(",") if x.strip()]
 DEMO_NULL_ORIGIN_HOSTS = [x.strip() for x in os.environ.get("DJANGO_DEMO_NULL_ORIGIN_HOSTS", "localhost,127.0.0.1").split(",") if x.strip()]
+if PRODUCTION:
+    if DEBUG or len(SECRET_KEY) < 50 or len(set(SECRET_KEY)) < 5 or SECRET_KEY.startswith("django-insecure-"):
+        raise ImproperlyConfigured("Для публичного запуска нужны DJANGO_DEBUG=0 и отдельный случайный DJANGO_SECRET_KEY длиной не менее 50 символов")
+    if not any(host not in ("localhost", "127.0.0.1") for host in ALLOWED_HOSTS):
+        raise ImproperlyConfigured("Укажите публичный домен в DJANGO_ALLOWED_HOSTS")
+    if not CSRF_TRUSTED_ORIGINS or any(not origin.startswith("https://") for origin in CSRF_TRUSTED_ORIGINS):
+        raise ImproperlyConfigured("Укажите HTTPS-адрес сайта в DJANGO_CSRF_TRUSTED_ORIGINS")
 INSTALLED_APPS = ["django.contrib.admin", "django.contrib.auth", "django.contrib.contenttypes", "django.contrib.sessions", "django.contrib.messages", "django.contrib.staticfiles", "store"]
 MIDDLEWARE = ["django.middleware.security.SecurityMiddleware", "django.contrib.sessions.middleware.SessionMiddleware", "django.middleware.common.CommonMiddleware", "config.middleware.DemoNullOriginMiddleware", "django.middleware.csrf.CsrfViewMiddleware", "django.contrib.auth.middleware.AuthenticationMiddleware", "django.contrib.messages.middleware.MessageMiddleware", "django.middleware.clickjacking.XFrameOptionsMiddleware"]
 ROOT_URLCONF = "config.urls"
@@ -20,13 +29,16 @@ LANGUAGE_CODE = "ru-ru"
 TIME_ZONE = "Asia/Barnaul"
 USE_TZ = True
 STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "media/"
 MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
-X_FRAME_OPTIONS = "SAMEORIGIN"
+SECURE_SSL_REDIRECT = PRODUCTION
+SECURE_HSTS_SECONDS = int(os.environ.get("DJANGO_HSTS_SECONDS", "3600" if PRODUCTION else "0"))
+X_FRAME_OPTIONS = "DENY" if PRODUCTION else "SAMEORIGIN"
 SECURE_REFERRER_POLICY = "no-referrer"
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "")
@@ -35,6 +47,7 @@ PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "")
 SHOP_CHAT_ID = os.environ.get("SHOP_CHAT_ID", "")
 PAYMENT_WEBHOOK_SECRET = os.environ.get("PAYMENT_WEBHOOK_SECRET", "")
 DEMO_PAYMENTS = DEBUG and os.environ.get("DEMO_PAYMENTS", "0") == "1"
+ALLOW_TEST_PAYMENTS = not PRODUCTION or os.environ.get("DJANGO_ALLOW_TEST_PAYMENTS", "0") == "1"
 TELEGRAM_LOGIN_CLIENT_ID = os.environ.get("TELEGRAM_LOGIN_CLIENT_ID", "")
 TELEGRAM_LOGIN_CLIENT_SECRET = os.environ.get("TELEGRAM_LOGIN_CLIENT_SECRET", "")
 YOOKASSA_SHOP_ID = os.environ.get("YOOKASSA_SHOP_ID", "")

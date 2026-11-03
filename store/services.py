@@ -30,7 +30,9 @@ def cart_lines(cart, lock=False):
 
 
 def queue_shop(text):
-    Notification.objects.create(kind="shop", text=text)
+    # A separate shop chat is optional; keep the event in Admin when absent.
+    status = "pending" if get_runtime_config().shop_chat_id else "internal"
+    Notification.objects.create(kind="shop", text=text, status=status)
 
 
 def queue_buyer(order, text):
@@ -134,11 +136,11 @@ def send_notification(notification, config=None):
 
 def flush_notifications(limit=20):
     config = get_runtime_config()
+    if not config.shop_chat_id:
+        Notification.objects.filter(kind="shop", status="pending").update(status="internal")
     if not config.bot_token:
         return
     pending = Notification.objects.filter(status="pending")
-    if not config.shop_chat_id:
-        pending = pending.exclude(kind="shop")
     for notification in pending.order_by("created_at")[:limit]:
         try:
             send_notification(notification, config)

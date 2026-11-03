@@ -177,17 +177,21 @@ class ShopTests(TestCase):
         self.assertEqual((notification.status, notification.attempts), ("sent", 3))
 
     @override_settings(SHOP_CHAT_ID="")
-    def test_shop_notification_waits_for_chat_configuration(self):
+    def test_shop_notifications_stay_in_admin_without_optional_chat(self):
         queue_shop("Проверка доставки")
+        Notification.objects.create(kind="shop", text="Старое сообщение", status="pending")
         with patch("requests.post") as send:
             flush_notifications()
-        notification = Notification.objects.get(kind="shop")
-        self.assertEqual(notification.status, "pending")
+        notification = Notification.objects.get(kind="shop", text="Проверка доставки")
+        self.assertEqual(notification.status, "internal")
+        self.assertEqual(Notification.objects.get(kind="shop", text="Старое сообщение").status, "internal")
         send.assert_not_called()
         with override_settings(SHOP_CHAT_ID="-100123"), patch("requests.post", return_value=Mock(status_code=200, json=lambda: {"ok": True})):
+            queue_shop("Новое сообщение")
             flush_notifications()
         notification.refresh_from_db()
-        self.assertEqual(notification.status, "sent")
+        self.assertEqual(notification.status, "internal")
+        self.assertEqual(Notification.objects.get(kind="shop", text="Новое сообщение").status, "sent")
 
     @override_settings(BOT_USERNAME="test_bot", BOT_APP_SHORT_NAME="shop", SHOP_CHAT_ID="-100123")
     def test_start_command_delivers_previous_buyer_notifications(self):
@@ -749,6 +753,18 @@ class CommerceFeaturesTests(TestCase):
             self.assertEqual(self.client.post(reverse("yoo_status", args=[order.access_token])).status_code, 503)
         order.refresh_from_db()
         self.assertEqual(order.payment_state, "pending")
+
+    @override_settings(PRODUCTION=True, ALLOW_TEST_PAYMENTS=False,
+                       YOOKASSA_SHOP_ID="test-shop", YOOKASSA_SECRET_KEY="test-secret")
+    def test_public_server_does_not_offer_test_payments_by_default(self):
+        from .integrations import yookassa_configured
+        from .services import PaymentError
+        from .yookassa import credentials
+
+        self.assertFalse(yookassa_configured())
+        self.assertContains(self.client.get(reverse("checkout")), "ЮKassa сейчас недоступна")
+        with self.assertRaises(PaymentError):
+            credentials()
 
 
 class AnalyticsTests(TestCase):

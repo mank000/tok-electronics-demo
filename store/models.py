@@ -274,7 +274,7 @@ class Notification(models.Model):
     kind = models.CharField("Тип", max_length=20, choices=[("buyer", "Покупателю"), ("shop", "Магазину")])
     telegram_id = models.BigIntegerField("Telegram ID", null=True, blank=True)
     text = models.TextField("Сообщение")
-    status = models.CharField("Состояние", max_length=12, choices=[("pending", "Ожидает"), ("sent", "Отправлено"), ("failed", "Ошибка")], default="pending")
+    status = models.CharField("Состояние", max_length=12, choices=[("pending", "Ожидает"), ("sent", "Отправлено"), ("failed", "Ошибка"), ("internal", "Только в админке")], default="pending")
     attempts = models.PositiveSmallIntegerField("Попыток", default=0)
     last_error = models.TextField("Ошибка", blank=True)
     created_at = models.DateTimeField("Создано", auto_now_add=True)
