@@ -2,8 +2,8 @@ import time
 import requests
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from store.models import BotUser
-from store.services import flush_notifications
+from store.models import BotUser, ShopSettings
+from store.services import flush_notifications, retry_buyer_notifications
 
 
 class Command(BaseCommand):
@@ -41,11 +41,13 @@ class Command(BaseCommand):
                         if not user_id:
                             continue
                         BotUser.objects.update_or_create(telegram_id=user_id, defaults={"chat_id": chat["id"]})
+                        retry_buyer_notifications(user_id)
                         if settings.BOT_USERNAME and settings.BOT_APP_SHORT_NAME:
                             url = f"https://t.me/{settings.BOT_USERNAME}/{settings.BOT_APP_SHORT_NAME}"
                         else:
                             url = settings.PUBLIC_BASE_URL
-                        answer = requests.post(api + "sendMessage", json={"chat_id": chat["id"], "text": "Привет! Это ток. — учебный магазин электроники. Открой каталог и выбери устройство.", "reply_markup": {"inline_keyboard": [[{"text": "Открыть каталог", "url": url}]]}}, timeout=12)
+                        shop = ShopSettings.objects.filter(pk=1).first() or ShopSettings()
+                        answer = requests.post(api + "sendMessage", json={"chat_id": chat["id"], "text": f"Привет! Это {shop.name} — {shop.subtitle.lower()}. Открой каталог и выбери устройство.", "reply_markup": {"inline_keyboard": [[{"text": "Открыть каталог", "url": url}]]}}, timeout=12)
                         if answer.status_code != 200:
                             raise RuntimeError(f"Telegram HTTP {answer.status_code}")
             except KeyboardInterrupt:

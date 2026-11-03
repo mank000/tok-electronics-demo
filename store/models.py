@@ -1,15 +1,42 @@
-import io
 import secrets
 import uuid
 from decimal import Decimal
-from PIL import Image
-from django.core.files.base import ContentFile
+from django.core.validators import RegexValidator
 from django.db import models
 from django.utils import timezone
+from .images import open_raster, webp_content
 
 
 def new_access_token():
     return secrets.token_urlsafe(32)
+
+
+class ShopSettings(models.Model):
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    name = models.CharField("Название магазина", max_length=100, default="ток.")
+    subtitle = models.CharField("Подпись магазина", max_length=160, default="Учебный магазин электроники")
+    logo = models.ImageField("Логотип WebP", upload_to="shop/", blank=True)
+    contact_phone = models.CharField("Телефон магазина", max_length=32, blank=True)
+    contact_email = models.EmailField("Электронная почта", blank=True)
+    pickup_address = models.CharField("Адрес самовывоза", max_length=255, blank=True)
+    legal_name = models.CharField("Наименование организации или ИП", max_length=255, blank=True)
+    inn = models.CharField("ИНН", max_length=12, blank=True, validators=[RegexValidator(r"^(?:\d{10}|\d{12})$", "ИНН должен состоять из 10 или 12 цифр")])
+    ogrn = models.CharField("ОГРН или ОГРНИП", max_length=15, blank=True, validators=[RegexValidator(r"^(?:\d{13}|\d{15})$", "ОГРН или ОГРНИП должен состоять из 13 или 15 цифр")])
+    legal_address = models.CharField("Юридический адрес", max_length=255, blank=True)
+
+    class Meta:
+        verbose_name = "Настройки магазина"
+        verbose_name_plural = "Настройки магазина"
+
+    def __str__(self):
+        return self.name
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        if self.logo and not self.logo._committed:
+            image = open_raster(self.logo)
+            self.logo.save(f"{uuid.uuid4().hex}.webp", webp_content(image, 640), save=False)
+        super().save(*args, **kwargs)
 
 
 class Category(models.Model):
@@ -71,14 +98,9 @@ class ProductImage(models.Model):
 
     def save(self, *args, **kwargs):
         if self.image and not self.image._committed:
-            self.image.open()
-            source = Image.open(self.image).convert("RGB")
-            for field, size, quality in (("image", (1200, 1200), 82), ("thumb", (480, 480), 76)):
-                photo = source.copy()
-                photo.thumbnail(size, Image.Resampling.LANCZOS)
-                out = io.BytesIO()
-                photo.save(out, format="WEBP", quality=quality, method=5)
-                getattr(self, field).save(f"{uuid.uuid4().hex}.webp", ContentFile(out.getvalue()), save=False)
+            image = open_raster(self.image)
+            for field, size, quality in (("image", 1200, 82), ("thumb", 480, 76)):
+                getattr(self, field).save(f"{uuid.uuid4().hex}.webp", webp_content(image, size, quality), save=False)
         super().save(*args, **kwargs)
 
 
