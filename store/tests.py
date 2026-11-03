@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import io
 import json
 import tempfile
 import time
@@ -8,10 +9,12 @@ from decimal import Decimal
 from unittest.mock import Mock, patch
 from urllib.parse import urlencode
 from PIL import Image
+from django.contrib.auth import get_user_model
 from django.core.management import call_command
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
-from .models import BotUser, Category, Notification, Order, PaymentAttempt, PaymentEvent, Product, ProductImage
+from .models import BotUser, Category, Notification, Order, PaymentAttempt, PaymentEvent, Product, ProductImage, ShopSettings
 from .security import TelegramAuthError, verify_init_data
 from .services import flush_notifications, process_payment_event, queue_order_changed, queue_shop, retry_buyer_notifications, signed_event
 
@@ -26,6 +29,12 @@ def telegram_data(user_id=123, stamp=None):
     key = hmac.new(b"WebAppData", TOKEN.encode(), hashlib.sha256).digest()
     fields["hash"] = hmac.new(key, check.encode(), hashlib.sha256).hexdigest()
     return urlencode(fields)
+
+
+def image_upload(name, image_format, size=(900, 700)):
+    output = io.BytesIO()
+    Image.new("RGB", size, "#d0d9dd").save(output, format=image_format)
+    return SimpleUploadedFile(name, output.getvalue(), content_type=f"image/{image_format.lower()}")
 
 
 @override_settings(BOT_TOKEN=TOKEN, PAYMENT_WEBHOOK_SECRET=SECRET, DEMO_PAYMENTS=True)
@@ -174,6 +183,7 @@ class ShopTests(TestCase):
 
     @override_settings(BOT_USERNAME="test_bot", BOT_APP_SHORT_NAME="shop", SHOP_CHAT_ID="-100123")
     def test_start_command_delivers_previous_buyer_notifications(self):
+        ShopSettings.objects.create(name="Моя техника", subtitle="Учебный магазин")
         notification = Notification.objects.create(kind="buyer", telegram_id=123, text="Статус заказа")
         flush_notifications()
         notification.refresh_from_db()
@@ -185,6 +195,7 @@ class ShopTests(TestCase):
         self.assertEqual(notification.status, "sent")
         self.assertTrue(BotUser.objects.filter(telegram_id=123, chat_id=123).exists())
         self.assertTrue(any(call.kwargs.get("json", {}).get("text") == "Статус заказа" for call in send.call_args_list))
+        self.assertTrue(any("Моя техника" in call.kwargs.get("json", {}).get("text", "") for call in send.call_args_list))
 
     def test_hidden_product_not_visible_or_orderable(self):
         self.product.is_visible = False
@@ -204,6 +215,53 @@ class ShopTests(TestCase):
     def test_catalog_basket_checkout_pages(self):
         for name in ("catalog", "basket", "checkout"):
             self.assertEqual(self.client.get(reverse(name)).status_code, 200)
+
+    def test_admin_shop_settings_update_storefront_and_convert_logo(self):
+        with tempfile.TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            admin_user = get_user_model().objects.create_superuser("admin", "admin@example.test", "test-password")
+            self.client.force_login(admin_user)
+            response = self.client.post(reverse("admin:store_shopsettings_add"), {
+                "name": "Моя техника", "subtitle": "Учебный магазин", "logo": image_upload("logo.png", "PNG"),
+                "contact_phone": "+7 900 123 45 67", "contact_email": "shop@example.test", "pickup_address": "Барнаул",
+                "legal_name": "ООО Тест", "inn": "1234567890", "ogrn": "1234567890123", "legal_address": "Барнаул",
+                "_save": "Сохранить",
+            })
+            self.assertEqual(response.status_code, 302)
+            shop = ShopSettings.objects.get(pk=1)
+            with Image.open(shop.logo.path) as logo:
+                self.assertEqual(logo.format, "WEBP")
+                self.assertLessEqual(max(logo.size), 640)
+            page = self.client.get(reverse("catalog"))
+            self.assertContains(page, "Моя техника")
+            self.assertContains(page, "ИНН 1234567890")
+            self.assertContains(page, shop.logo.url)
+            self.assertContains(self.client.get(reverse("document", args=["offer"])), "Заглушка для учебного проекта")
+            self.assertEqual(self.client.get(reverse("admin:store_shopsettings_add")).status_code, 403)
+
+    def test_admin_product_photo_preview_uses_converted_webp(self):
+        with tempfile.TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            admin_user = get_user_model().objects.create_superuser("admin", "admin@example.test", "test-password")
+            self.client.force_login(admin_user)
+            url = reverse("admin:store_product_change", args=[self.product.pk])
+            response = self.client.post(url, {
+                "category": self.product.category_id, "name": self.product.name, "slug": self.product.slug,
+                "description": "Обновлённое описание", "specs": "{}", "price": "1500.00", "availability": "stock",
+                "is_visible": "on", "images-TOTAL_FORMS": "1", "images-INITIAL_FORMS": "0",
+                "images-MIN_NUM_FORMS": "0", "images-MAX_NUM_FORMS": "1000",
+                "images-0-image": image_upload("camera.jpg", "JPEG", (1500, 1000)),
+                "images-0-alt": "Тестовый снимок", "images-0-order": "0", "_save": "Сохранить",
+            })
+            self.assertEqual(response.status_code, 302)
+            self.product.refresh_from_db()
+            self.assertEqual(self.product.description, "Обновлённое описание")
+            photo = self.product.images.get()
+            with Image.open(photo.image.path) as main, Image.open(photo.thumb.path) as thumb:
+                self.assertEqual((main.format, thumb.format), ("WEBP", "WEBP"))
+                self.assertLessEqual(max(main.size), 1200)
+                self.assertLessEqual(max(thumb.size), 480)
+            page = self.client.get(url)
+            self.assertContains(page, "Текущее фото")
+            self.assertContains(page, photo.thumb.url)
 
     def test_category_sort_form_keeps_selected_category(self):
         response = self.client.get(reverse("catalog"), {"category": "tech", "sort": "price"})

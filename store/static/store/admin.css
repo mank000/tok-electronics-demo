@@ -1,1 +1,2 @@
 @media(max-width:700px){#content{padding:12px!important}.change-list #content{padding:8px!important}#changelist{overflow-x:auto}#changelist-form .results{overflow-x:auto}#changelist-form table{min-width:700px}fieldset .form-row{padding:10px 0!important}.inline-group{overflow-x:auto}.inline-group table{min-width:600px}}
+@media(max-width:700px){.inline-group .stacked{overflow-x:visible}.inline-group .stacked .form-row{overflow-wrap:anywhere}.inline-group .stacked input[type=file]{max-width:100%}.submit-row{display:flex;flex-wrap:wrap;gap:8px}.submit-row input{max-width:100%}}
