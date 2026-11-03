@@ -1,0 +1,63 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+{% block extrahead %}{{ block.super }}<link rel="stylesheet" href="{% static 'store/admin_analytics.css' %}?v=1">{% endblock %}
+{% block breadcrumbs %}<div class="breadcrumbs"><a href="{% url 'admin:index' %}">Главная</a> › Аналитика магазина</div>{% endblock %}
+{% block content %}
+<div class="analytics-dashboard">
+  <div class="analytics-heading">
+    <div><p class="analytics-eyebrow">ПОКАЗАТЕЛИ МАГАЗИНА</p><h1>Аналитика</h1><p>Демо-заказы, созданные для примеров отзывов, исключены. Данные обновляются при открытии страницы.</p></div>
+    <nav class="analytics-periods" aria-label="Период анализа">
+      {% for period in periods %}<a href="?months={{ period }}" {% if period == selected_months %}class="selected" aria-current="page"{% endif %}>{{ period }} мес.</a>{% endfor %}
+    </nav>
+  </div>
+
+  <div class="analytics-kpis">
+    <article><span>Заказы за период</span><strong>{{ total_orders }}</strong><small>Включая отменённые</small></article>
+    <article><span>Сумма заказов</span><strong>{{ placed_total }}</strong><small>Без отменённых; оплата может ожидаться</small></article>
+    <article><span>Подтверждено оплат</span><strong>{{ paid_total }}</strong><small>Демооплата и тестовая ЮKassa, без отменённых</small></article>
+    <article><span>Средний оплаченный заказ</span><strong>{{ average_paid }}</strong><small>По {{ paid_count }} подтверждённым оплатам</small></article>
+    <article><span>Активные заказы</span><strong>{{ active_orders }}</strong><small>Сейчас, за всё время</small></article>
+    <article><span>Возвраты в работе</span><strong>{{ pending_returns }}</strong><small>Новые и на рассмотрении</small></article>
+  </div>
+
+  <div class="analytics-charts">
+    <section class="analytics-panel"><div class="analytics-panel-heading"><div><h2>Заказы по месяцам</h2><p>Количество созданных заказов, включая отменённые</p></div></div>
+      <div class="analytics-chart-scroll"><div class="analytics-chart" style="--months:{{ selected_months }}" role="img" aria-label="Количество заказов по месяцам">
+        {% for row in monthly %}<div class="analytics-column" title="{{ row.label }}: заказы {{ row.count }}"><div class="analytics-bar-area"><div class="analytics-bar analytics-bar-orders" style="height:{{ row.orders_height }}%"></div></div><strong>{{ row.count }}</strong><small>{{ row.short }}</small></div>{% endfor %}
+      </div></div>
+    </section>
+    <section class="analytics-panel"><div class="analytics-panel-heading"><div><h2>Оплаты по месяцам</h2><p>Подтверждённые оплаты без отменённых заказов, по месяцу создания заказа</p></div></div>
+      <div class="analytics-chart-scroll"><div class="analytics-chart" style="--months:{{ selected_months }}" role="img" aria-label="Суммы подтверждённых оплат по месяцам">
+        {% for row in monthly %}<div class="analytics-column" title="{{ row.label }}: {{ row.paid_label }}"><div class="analytics-bar-area"><div class="analytics-bar analytics-bar-money" style="height:{{ row.paid_height }}%"></div></div><strong>{{ row.paid_label }}</strong><small>{{ row.short }}</small></div>{% endfor %}
+      </div></div>
+    </section>
+  </div>
+  <p class="analytics-caveat">Сейчас платежи в приложении учебные: демооплата и тестовый магазин ЮKassa. Эти суммы не являются фактической выручкой. Оплата при получении не входит в график оплат. Отдельная дата оплаты пока не сохраняется, поэтому суммы распределены по месяцу создания заказа.</p>
+
+  <div class="analytics-columns">
+    <section class="analytics-panel"><div class="analytics-panel-heading"><div><h2>Чаще всего заказывают</h2><p>Без отменённых и учебных заказов, за выбранный период</p></div><a href="{% url 'admin:store_order_changelist' %}">Все заказы ↗</a></div>
+      <div class="analytics-table-scroll"><table class="analytics-table"><thead><tr><th>Товар</th><th>Шт.</th><th>Заказов</th><th>Сумма позиций</th></tr></thead><tbody>
+        {% for item in top_products %}<tr><td>{% if item.product__is_visible %}<a href="{% url 'admin:store_product_change' item.product_id %}">{{ item.product__name }}</a>{% else %}{{ item.product__name }}{% endif %}</td><td>{{ item.units }}</td><td>{{ item.order_count }}</td><td>{{ item.amount_label }}</td></tr>{% empty %}<tr><td colspan="4">За выбранный период заказов пока нет.</td></tr>{% endfor %}
+      </tbody></table></div>
+    </section>
+    <section class="analytics-panel"><div class="analytics-panel-heading"><div><h2>Что хотят заказать</h2><p>Заявки «Хочу такой» за выбранный период</p></div><a href="{% url 'admin:store_wish_changelist' %}">Все заявки ↗</a></div>
+      <div class="analytics-table-scroll"><table class="analytics-table"><thead><tr><th>Товар</th><th>Заявок</th></tr></thead><tbody>
+        {% for item in top_wishes %}<tr><td>{% if item.product__is_visible %}<a href="{% url 'admin:store_product_change' item.product_id %}">{{ item.product__name }}</a>{% else %}{{ item.product__name }}{% endif %}</td><td>{{ item.count }}</td></tr>{% empty %}<tr><td colspan="2">Заявок пока нет.</td></tr>{% endfor %}
+      </tbody></table></div>
+      <p class="analytics-footnote">Добавлений в избранное за период: <strong>{{ favorites }}</strong></p>
+    </section>
+  </div>
+
+  <section class="analytics-panel"><div class="analytics-panel-heading"><div><h2>По месяцам: точные значения</h2><p>«Сумма заказов» включает неоплаченные заказы; отменённые исключены</p></div></div>
+    <div class="analytics-table-scroll"><table class="analytics-table"><thead><tr><th>Месяц</th><th>Заказы</th><th>Сумма заказов</th><th>Подтверждено оплат</th></tr></thead><tbody>
+      {% for row in monthly reversed %}<tr><td>{{ row.label }}</td><td>{{ row.count }}</td><td>{{ row.placed_label }}</td><td>{{ row.paid_label }}</td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+
+  <div class="analytics-breakdowns">
+    <section class="analytics-panel"><h2>Статусы заказов</h2>{% for row in status_breakdown %}<div class="analytics-breakdown"><div><span>{{ row.label }}</span><strong>{{ row.count }}</strong></div><div class="analytics-progress"><span style="width:{{ row.percent }}%"></span></div></div>{% endfor %}</section>
+    <section class="analytics-panel"><h2>Получение</h2>{% for row in delivery_breakdown %}<div class="analytics-breakdown"><div><span>{{ row.label }}</span><strong>{{ row.count }}</strong></div><div class="analytics-progress"><span style="width:{{ row.percent }}%"></span></div></div>{% endfor %}</section>
+    <section class="analytics-panel"><h2>Способы оплаты</h2>{% for row in gateway_breakdown %}<div class="analytics-breakdown"><div><span>{{ row.label }}</span><strong>{{ row.count }}</strong></div><div class="analytics-progress"><span style="width:{{ row.percent }}%"></span></div></div>{% endfor %}</section>
+  </div>
+</div>
+{% endblock %}

@@ -3,12 +3,15 @@ import re
 from django import forms
 from django.contrib import admin
 from django.conf import settings
+from django.core.exceptions import PermissionDenied
 from django.db.models import Count, F
+from django.template.response import TemplateResponse
 from django.utils.decorators import method_decorator
 from django.utils.html import format_html
 from django.views.decorators.debug import sensitive_post_parameters
+from .analytics import dashboard_data
 from .integrations import encrypt_secret
-from .models import BotUser, Category, CustomerProfile, Favorite, IntegrationSettings, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductCollection, ProductImage, ProductQuestion, ProductReview, ReturnRequest, ShopSettings, Wish
+from .models import BotUser, Category, CustomerProfile, Favorite, IntegrationSettings, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductCollection, ProductImage, ProductQuestion, ProductReview, ReturnRequest, ShopAnalytics, ShopSettings, Wish
 from .services import queue_buyer, queue_order_changed
 
 
@@ -219,6 +222,47 @@ class OrderAdmin(ResponsiveAdmin):
         super().save_model(request, obj, form, change)
         if old:
             queue_order_changed(obj, old.status, old.track_number)
+
+
+@admin.register(ShopAnalytics)
+class ShopAnalyticsAdmin(ResponsiveAdmin):
+    change_list_template = "admin/store/analytics.html"
+
+    def has_module_permission(self, request):
+        return self.has_view_permission(request)
+
+    def has_view_permission(self, request, obj=None):
+        return request.user.is_superuser or request.user.has_perm("store.view_order")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).none()
+
+    def changelist_view(self, request, extra_context=None):
+        if not self.has_view_permission(request):
+            raise PermissionDenied
+        try:
+            months = int(request.GET.get("months", 12))
+        except (TypeError, ValueError):
+            months = 12
+        request.current_app = self.admin_site.name
+        context = {
+            **self.admin_site.each_context(request),
+            "title": "Аналитика магазина",
+            "opts": self.model._meta,
+            "app_label": self.model._meta.app_label,
+            **dashboard_data(months),
+            **(extra_context or {}),
+        }
+        return TemplateResponse(request, self.change_list_template, context)
 
 
 @admin.register(Wish)
