@@ -357,6 +357,21 @@ class ShopTests(TestCase):
             self.assertEqual(client.post(reverse("checkout"), data, HTTP_HOST="localhost:8008", HTTP_ORIGIN="null").status_code, 403)
         self.assertEqual(client.post(reverse("checkout"), data, HTTP_HOST="localhost:8008", HTTP_ORIGIN="null", HTTP_X_FORWARDED_PROTO="https").status_code, 403)
 
+    @override_settings(DEBUG=True, ALLOWED_HOSTS=["shop.example.test"], CSRF_TRUSTED_ORIGINS=["https://shop.example.test"], DEMO_NULL_ORIGIN_HOSTS=["shop.example.test"])
+    def test_demo_https_tunnel_checkout_accepts_null_origin_with_csrf_token(self):
+        client = Client(enforce_csrf_checks=True)
+        request_headers = {"HTTP_HOST": "shop.example.test", "HTTP_X_FORWARDED_PROTO": "https", "HTTP_ORIGIN": "null"}
+        client.get(reverse("checkout"), **request_headers)
+        token = client.cookies["csrftoken"].value
+        data = {"name": "Покупатель", "phone": "+7 900 123 45 67", "delivery": "pickup", "address": "", "comment": "", "payment_method": "online", "consent": "on", "cart": json.dumps({str(self.product.pk): 1}), "checkout_key": str(uuid.uuid4()), "csrfmiddlewaretoken": token}
+        self.assertEqual(client.post(reverse("checkout"), data, **request_headers).status_code, 302)
+        self.assertEqual(Order.objects.count(), 1)
+        self.assertEqual(client.post(reverse("checkout"), {"name": "Покупатель"}, **request_headers).status_code, 403)
+        with override_settings(DEMO_NULL_ORIGIN_HOSTS=[]):
+            self.assertEqual(client.post(reverse("checkout"), data, **request_headers).status_code, 403)
+        with override_settings(DEBUG=False):
+            self.assertEqual(client.post(reverse("checkout"), data, **request_headers).status_code, 403)
+
     @override_settings(DEBUG=True)
     def test_local_admin_login_allows_null_origin_only_with_csrf_token(self):
         login_url = reverse("admin:login")
