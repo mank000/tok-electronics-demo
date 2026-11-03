@@ -3,6 +3,7 @@ import requests
 from django.core.management.base import BaseCommand
 from store.integrations import get_runtime_config
 from store.models import BotUser, ShopSettings
+from store.phone_login import normalize_phone
 from store.services import flush_notifications, retry_buyer_notifications
 
 
@@ -41,7 +42,11 @@ class Command(BaseCommand):
                     contact = message.get("contact")
                     sender_id = message.get("from", {}).get("id")
                     if contact and chat.get("type") == "private" and contact.get("user_id") == sender_id:
-                        BotUser.objects.update_or_create(telegram_id=sender_id, defaults={"chat_id": chat["id"], "phone": contact.get("phone_number", "")[:32]})
+                        phone = contact.get("phone_number", "")[:32]
+                        digits = normalize_phone(phone)
+                        if digits:
+                            BotUser.objects.filter(phone_digits=digits).exclude(telegram_id=sender_id).update(phone="", phone_digits="")
+                            BotUser.objects.update_or_create(telegram_id=sender_id, defaults={"chat_id": chat["id"], "phone": phone, "phone_digits": digits})
                     if text.startswith("/chatid"):
                         answer = requests.post(api + "sendMessage", json={"chat_id": chat["id"], "text": f"ID этого чата: {chat['id']}"}, timeout=12)
                         if answer.status_code != 200:

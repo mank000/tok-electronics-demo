@@ -3,6 +3,7 @@ import uuid
 from datetime import timedelta
 from decimal import Decimal
 from django.conf import settings
+from django.middleware.csrf import get_token
 from django.db import IntegrityError, transaction
 from django.db.models import Avg
 from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseForbidden, JsonResponse
@@ -12,16 +13,18 @@ from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.csrf import ensure_csrf_cookie
-from django.views.decorators.http import require_GET, require_POST
+from django.views.decorators.http import require_GET, require_POST, require_http_methods
 from .forms import CheckoutForm, QuestionForm, ReturnForm, ReviewForm
 from .integrations import get_runtime_config
-from .models import BotUser, Category, Favorite, Order, OrderItem, PaymentAttempt, Product, ProductCollection, ProductQuestion, ProductReview, RecentlyViewed, ReturnRequest, Wish
-from .security import TelegramAuthError, current_profile, telegram_id_from_request
+from .models import BotUser, Category, CustomerProfile, Favorite, Order, OrderItem, PaymentAttempt, Product, ProductCollection, ProductQuestion, ProductReview, RecentlyViewed, ReturnRequest, Wish
+from .phone_login import issue_code, normalize_phone, verify_code
+from .security import TelegramAuthError, current_profile, telegram_id_from_request, verified_init_profile
 from .telegram_login import complete_login, configured as telegram_login_configured, start_login
 from .services import PaymentError, cart_lines, process_payment_event, queue_buyer, queue_order_created, queue_shop, signed_event
 
 
 def page(request, name, context=None, status=200):
+    get_token(request)
     response = render(request, f"store/{name}.html", context or {}, status=status)
     response["Referrer-Policy"] = "no-referrer"
     response["Cache-Control"] = "no-store"
@@ -212,10 +215,31 @@ def my_contact(request):
     return JsonResponse({"phone": user.phone if user else ""})
 
 
+@require_http_methods(["GET", "POST"])
+def registration(request):
+    try:
+        profile = verified_init_profile(request.headers.get("X-Telegram-Init-Data", ""))
+    except TelegramAuthError:
+        return JsonResponse({"error": "Откройте магазин внутри Telegram"}, status=403)
+    bot_user = BotUser.objects.filter(telegram_id=profile["id"]).first()
+    has_phone = bool(bot_user and bot_user.phone and bot_user.phone_digits)
+    saved = CustomerProfile.objects.filter(telegram_id=profile["id"]).first()
+    if request.method == "GET":
+        return JsonResponse({"registered": bool(saved and has_phone), "has_phone": has_phone, "name": saved.name if saved else profile["name"]})
+    if not has_phone:
+        return JsonResponse({"error": "Сначала разрешите Telegram передать номер"}, status=409)
+    name = " ".join(request.POST.get("name", "").split())
+    if not 2 <= len(name) <= 80:
+        return JsonResponse({"error": "Укажите имя от 2 до 80 символов"}, status=400)
+    CustomerProfile.objects.update_or_create(telegram_id=profile["id"], defaults={"name": name})
+    return JsonResponse({"registered": True, "name": name})
+
+
 def checkout(request):
     if request.method == "GET":
         yoo_enabled = bool(settings.YOOKASSA_SHOP_ID and settings.YOOKASSA_SECRET_KEY)
-        return page(request, "checkout", {"form": CheckoutForm(initial={"checkout_key": uuid.uuid4(), "delivery": "pickup", "payment_method": "online" if settings.DEMO_PAYMENTS or yoo_enabled else "receipt", "payment_gateway": "demo" if settings.DEMO_PAYMENTS else "yookassa", "name": request.session.get("telegram_name", "")}), "demo_enabled": settings.DEMO_PAYMENTS, "yoo_enabled": yoo_enabled})
+        saved_phone = BotUser.objects.filter(telegram_id=request.session.get("telegram_id")).values_list("phone", flat=True).first() if request.session.get("telegram_id") else ""
+        return page(request, "checkout", {"form": CheckoutForm(initial={"checkout_key": uuid.uuid4(), "delivery": "pickup", "payment_method": "online" if settings.DEMO_PAYMENTS or yoo_enabled else "receipt", "payment_gateway": "demo" if settings.DEMO_PAYMENTS else "yookassa", "name": request.session.get("telegram_name", ""), "phone": saved_phone}), "demo_enabled": settings.DEMO_PAYMENTS, "yoo_enabled": yoo_enabled})
     form = CheckoutForm(request.POST)
     if not form.is_valid():
         return page(request, "checkout", {"form": form, "demo_enabled": settings.DEMO_PAYMENTS, "yoo_enabled": bool(settings.YOOKASSA_SHOP_ID and settings.YOOKASSA_SECRET_KEY)}, 400)
@@ -357,9 +381,7 @@ def yoo_webhook(request):
 
 @require_GET
 def telegram_login_start(request):
-    next_path = request.GET.get("next", reverse("account"))
-    if not next_path.startswith("/") or "\\" in next_path or not url_has_allowed_host_and_scheme(next_path, allowed_hosts={request.get_host()}, require_https=request.is_secure()):
-        next_path = reverse("account")
+    next_path = safe_login_next(request, request.GET.get("next"))
     try:
         return redirect(start_login(request, next_path))
     except TelegramAuthError as exc:
@@ -372,6 +394,20 @@ def telegram_login_callback(request):
         profile, next_path = complete_login(request)
     except TelegramAuthError:
         return redirect(reverse("account") + "?login_error=1")
+    saved = CustomerProfile.objects.filter(telegram_id=profile["id"]).only("name").first()
+    if saved:
+        profile["name"] = saved.name
+    link_browser_account(request, profile)
+    return redirect(next_path)
+
+
+def safe_login_next(request, value):
+    if not value or not value.startswith("/") or "\\" in value or not url_has_allowed_host_and_scheme(value, allowed_hosts={request.get_host()}, require_https=request.is_secure()):
+        return reverse("account")
+    return value
+
+
+def link_browser_account(request, profile):
     old_session = request.session.session_key
     tokens = request.session.get("browser_order_tokens", []) + list(request.session.get("checkout_tokens", {}).values())
     with transaction.atomic():
@@ -385,7 +421,25 @@ def telegram_login_callback(request):
     request.session["telegram_id"] = profile["id"]
     request.session["telegram_name"] = profile["name"]
     request.session.set_expiry(60 * 60 * 24 * 30)
-    return redirect(next_path)
+
+
+@require_POST
+def phone_login_request(request):
+    phone = request.POST.get("phone", "")
+    if not normalize_phone(phone):
+        return JsonResponse({"error": "Укажите номер с кодом страны"}, status=400)
+    issue_code(request, phone, safe_login_next(request, request.POST.get("next")))
+    return JsonResponse({"ok": True, "message": "Если номер зарегистрирован, код придёт в чат с ботом. Он действует 5 минут."})
+
+
+@require_POST
+def phone_login_verify(request):
+    result = verify_code(request, request.POST.get("code"))
+    if not result:
+        return JsonResponse({"error": "Код неверен или истёк"}, status=400)
+    profile, next_path = result
+    link_browser_account(request, profile)
+    return JsonResponse({"ok": True, "redirect": next_path})
 
 
 @require_POST
@@ -397,7 +451,7 @@ def telegram_logout(request):
 def account(request, section=None):
     if section not in (None, "orders", "purchases", "wishes", "favorites"):
         return HttpResponse(status=404)
-    return page(request, "account", {"account_section": section, "telegram_login_ready": telegram_login_configured()})
+    return page(request, "account", {"account_section": section, "telegram_login_ready": telegram_login_configured(), "phone_login_ready": bool(get_runtime_config().bot_token)})
 
 
 def account_data(request):

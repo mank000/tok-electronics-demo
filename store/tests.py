@@ -2,9 +2,11 @@ import hashlib
 import hmac
 import io
 import json
+import re
 import tempfile
 import time
 import uuid
+from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -15,8 +17,10 @@ from django.core.management import call_command
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 from .integrations import encrypt_secret, get_runtime_config
-from .models import BotUser, Category, Favorite, IntegrationSettings, Notification, Order, PaymentAttempt, PaymentEvent, Product, ProductImage, ProductQuestion, ProductReview, RecentlyViewed, ReturnRequest, ShopSettings
+from .models import BotUser, BrowserLoginCode, Category, CustomerProfile, Favorite, IntegrationSettings, Notification, Order, PaymentAttempt, PaymentEvent, Product, ProductImage, ProductQuestion, ProductReview, RecentlyViewed, ReturnRequest, ShopSettings
+from .phone_login import normalize_phone
 from .security import TelegramAuthError, verify_init_data
 from .services import flush_notifications, process_payment_event, queue_order_changed, queue_shop, retry_buyer_notifications, signed_event
 
@@ -198,6 +202,17 @@ class ShopTests(TestCase):
         self.assertTrue(BotUser.objects.filter(telegram_id=123, chat_id=123).exists())
         self.assertTrue(any(call.kwargs.get("json", {}).get("text") == "Статус заказа" for call in send.call_args_list))
         self.assertTrue(any("Моя техника" in call.kwargs.get("json", {}).get("text", "") for call in send.call_args_list))
+
+    @override_settings(BOT_USERNAME="test_bot", BOT_APP_SHORT_NAME="shop")
+    def test_bot_keeps_only_own_shared_contact_for_phone_login(self):
+        updates = {"ok": True, "result": [
+            {"update_id": 1, "message": {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}, "contact": {"user_id": 456, "phone_number": "+7 999 111-22-33"}}},
+            {"update_id": 2, "message": {"from": {"id": 123}, "chat": {"id": 123, "type": "private"}, "contact": {"user_id": 123, "phone_number": "+7 900 123-45-67"}}},
+        ]}
+        with patch("requests.get", side_effect=[Mock(json=lambda: updates), KeyboardInterrupt]):
+            call_command("runbot")
+        self.assertEqual(BotUser.objects.get(telegram_id=123).phone_digits, "79001234567")
+        self.assertFalse(BotUser.objects.filter(phone_digits="79991112233").exists())
 
     def test_hidden_product_not_visible_or_orderable(self):
         self.product.is_visible = False
@@ -536,6 +551,73 @@ class CommerceFeaturesTests(TestCase):
             jwks.return_value.get_signing_key_from_jwt.return_value.key = "public-key"
             result = self.client.get(reverse("telegram_login_callback"), {"state": state, "code": "code"})
         self.assertEqual(result.status_code, 302)
+        self.assertEqual(self.client.get(reverse("account_data")).status_code, 401)
+
+    def test_miniapp_registration_needs_own_shared_contact(self):
+        auth = {"HTTP_X_TELEGRAM_INIT_DATA": telegram_data(123)}
+        url = reverse("registration")
+        self.assertEqual(self.client.get(url, **auth).json()["registered"], False)
+        self.assertEqual(self.client.post(url, {"name": "Аня"}, **auth).status_code, 409)
+        self.assertEqual(self.client.post(url, {"name": "Аня"}).status_code, 403)
+        BotUser.objects.create(telegram_id=123, chat_id=123, phone="+7 900 123-45-67", phone_digits="79001234567")
+        self.assertEqual(self.client.get(url, **auth).json()["has_phone"], True)
+        self.assertEqual(self.client.post(url, {"name": "  Анна   Тест  "}, **auth).json()["registered"], True)
+        self.assertEqual(CustomerProfile.objects.get(telegram_id=123).name, "Анна Тест")
+        self.assertEqual(self.client.get(reverse("account_data"), **auth).json()["profile"]["name"], "Анна Тест")
+        self.assertNotIn("phone", self.client.get(reverse("account_data"), **auth).json()["profile"])
+
+    def test_browser_phone_code_links_registered_account_and_guest_order(self):
+        self.assertEqual(normalize_phone("8 (900) 123-45-67"), "79001234567")
+        BotUser.objects.create(telegram_id=123, chat_id=987, phone="+7 900 123-45-67", phone_digits="79001234567")
+        CustomerProfile.objects.create(telegram_id=123, name="Анна Тест")
+        browser = Client()
+        self.assertEqual(self.checkout(client=browser).status_code, 302)
+        order = Order.objects.get()
+        with patch("store.phone_login.requests.post", return_value=Mock(status_code=200, json=lambda: {"ok": True})) as send:
+            response = browser.post(reverse("phone_login_request"), {"phone": "8 900 123 45 67", "next": reverse("account")})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(browser.post(reverse("phone_login_request"), {"phone": "+7 900 123-45-67"}).status_code, 200)
+        send.assert_called_once()
+        self.assertEqual(send.call_args.kwargs["json"]["chat_id"], 987)
+        code = re.search(r"\b\d{6}\b", send.call_args.kwargs["json"]["text"]).group()
+        self.assertNotEqual(BrowserLoginCode.objects.get().code_hash, code)
+        self.assertEqual(browser.post(reverse("phone_login_verify"), {"code": "999999" if code != "999999" else "888888"}).status_code, 400)
+        success = browser.post(reverse("phone_login_verify"), {"code": code})
+        self.assertEqual(success.status_code, 200)
+        self.assertEqual(success.json()["redirect"], reverse("account"))
+        order.refresh_from_db()
+        self.assertEqual(order.telegram_id, 123)
+        self.assertEqual(browser.get(reverse("account_data")).json()["profile"]["name"], "Анна Тест")
+        self.assertEqual(browser.post(reverse("phone_login_verify"), {"code": code}).status_code, 400)
+
+    def test_phone_code_does_not_send_to_unknown_number_and_expires(self):
+        BotUser.objects.create(telegram_id=123, chat_id=123, phone="+7 900 123-45-67", phone_digits="79001234567")
+        CustomerProfile.objects.create(telegram_id=123, name="Анна")
+        with patch("store.phone_login.requests.post", return_value=Mock(status_code=200, json=lambda: {"ok": True})) as send:
+            unknown = self.client.post(reverse("phone_login_request"), {"phone": "+7 999 111-22-33"})
+            self.assertEqual(unknown.status_code, 200)
+            send.assert_not_called()
+            self.client.post(reverse("phone_login_request"), {"phone": "+7 900 123-45-67"})
+        BrowserLoginCode.objects.update(expires_at=timezone.now() - timedelta(seconds=1))
+        self.assertEqual(self.client.post(reverse("phone_login_verify"), {"code": "000000"}).status_code, 400)
+        self.assertEqual(self.client.get(reverse("account_data")).status_code, 401)
+
+    def test_phone_login_requests_require_csrf_token(self):
+        browser = Client(enforce_csrf_checks=True)
+        browser.get(reverse("account"))
+        self.assertEqual(browser.post(reverse("phone_login_request"), {"phone": "+7 900 123-45-67"}).status_code, 403)
+        self.assertEqual(browser.post(reverse("phone_login_verify"), {"code": "123456"}).status_code, 403)
+
+    def test_phone_code_locks_after_five_wrong_attempts(self):
+        BotUser.objects.create(telegram_id=123, chat_id=123, phone="+7 900 123-45-67", phone_digits="79001234567")
+        CustomerProfile.objects.create(telegram_id=123, name="Анна")
+        with patch("store.phone_login.requests.post", return_value=Mock(status_code=200, json=lambda: {"ok": True})) as send:
+            self.client.post(reverse("phone_login_request"), {"phone": "+7 900 123-45-67"})
+        code = re.search(r"\b\d{6}\b", send.call_args.kwargs["json"]["text"]).group()
+        wrong = "999999" if code != "999999" else "888888"
+        for _ in range(5):
+            self.assertEqual(self.client.post(reverse("phone_login_verify"), {"code": wrong}).status_code, 400)
+        self.assertEqual(self.client.post(reverse("phone_login_verify"), {"code": code}).status_code, 400)
         self.assertEqual(self.client.get(reverse("account_data")).status_code, 401)
 
     def test_return_request_only_for_delivered_order_and_once_per_item(self):

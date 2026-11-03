@@ -72,9 +72,38 @@
     quote().then(data=>{const box=document.getElementById('checkout-summary'); box.replaceChildren(); for(const item of data.items){const row=document.createElement('div'); row.className='summary-row'; const label=document.createElement('span'); label.textContent=`${item.name} × ${item.quantity}`; const price=document.createElement('strong'); price.textContent=money(item.subtotal); row.append(label,price); box.append(row);} document.getElementById('checkout-total').textContent=money(data.total);}).catch(error=>{document.getElementById('checkout-summary').textContent=error.message; checkoutForm.querySelector('.submit-order').disabled=true;});
     checkoutForm.addEventListener('submit',()=>{checkoutForm.elements.cart.value=JSON.stringify(cart()); checkoutForm.querySelector('.submit-order').disabled=true;});
     const contact=document.getElementById('request-contact');
+    if(tg?.initData) fetch('/api/me/contact/',{headers:{'X-Telegram-Init-Data':tg.initData}}).then(r=>r.ok?r.json():null).then(data=>{if(data?.phone&&!checkoutForm.elements.phone.value)checkoutForm.elements.phone.value=data.phone;}).catch(()=>{});
     if(tg?.initData && tg.requestContact){contact.hidden=false; contact.addEventListener('click',()=>{tg.requestContact(async granted=>{const note=document.getElementById('contact-note'); note.hidden=false; if(!granted){note.textContent='Контакт не передан. Введите номер вручную.';return;} note.textContent='Ожидаем контакт от бота. Номер можно ввести вручную.'; for(let i=0;i<4;i++){await new Promise(resolve=>setTimeout(resolve,800)); try{const response=await fetch('/api/me/contact/',{headers:{'X-Telegram-Init-Data':tg.initData}}); if(response.ok){const data=await response.json(); if(data.phone){checkoutForm.elements.phone.value=data.phone; note.textContent='Номер получен от бота. Проверьте его перед заказом.';return;}}}catch{}} });});}
   }
   const identityHeaders = () => tg?.initData ? {'X-Telegram-Init-Data': tg.initData} : {};
+  const registrationOverlay=document.getElementById('registration-overlay');
+  if (tg?.initData && registrationOverlay && !sessionStorage.getItem('tok-registration-later')) {
+    const form=document.getElementById('registration-form'), message=document.getElementById('registration-message');
+    const contactButton=document.getElementById('registration-contact'), submitButton=document.getElementById('registration-submit');
+    const status=async()=>{const response=await fetch('/api/me/registration/',{headers:identityHeaders()}); if(!response.ok) throw Error('Не удалось проверить регистрацию'); return response.json();};
+    const applyStatus=data=>{if(!form.elements.name.value)form.elements.name.value=data.name||''; submitButton.disabled=!data.has_phone; contactButton.textContent=data.has_phone?'✓ Номер получен':'Поделиться номером через Telegram'; if(data.has_phone) message.textContent='Номер получен. Проверьте имя и сохраните.';};
+    status().then(data=>{if(!data.registered){registrationOverlay.hidden=false; applyStatus(data);}}).catch(()=>{});
+    contactButton.addEventListener('click',()=>{
+      if(!tg.requestContact){message.textContent='Обновите Telegram, чтобы поделиться номером.';return;}
+      contactButton.disabled=true;
+      tg.requestContact(async granted=>{
+        if(!granted){message.textContent='Вы не передали номер. Можно продолжить без регистрации.';contactButton.disabled=false;return;}
+        message.textContent='Ждём номер от Telegram…';
+        for(let i=0;i<20;i++){
+          await new Promise(resolve=>setTimeout(resolve,1000));
+          try{const data=await status();if(data.has_phone){applyStatus(data);contactButton.disabled=false;return;}}catch{}
+        }
+        message.textContent='Бот пока не получил контакт. Проверьте, что он запущен, и попробуйте ещё раз.';
+        contactButton.disabled=false;
+      });
+    });
+    form.addEventListener('submit',async event=>{
+      event.preventDefault();submitButton.disabled=true;message.textContent='Сохраняем…';
+      try{const body=new URLSearchParams({name:form.elements.name.value});const response=await fetch('/api/me/registration/',{method:'POST',headers:{'X-CSRFToken':decodeURIComponent(csrf||''),'Content-Type':'application/x-www-form-urlencoded',...identityHeaders()},body});const data=await response.json();if(!response.ok)throw Error(data.error||'Не удалось сохранить');location.reload();}
+      catch(error){message.textContent=error.message;submitButton.disabled=false;}
+    });
+    document.getElementById('registration-later').addEventListener('click',()=>{registrationOverlay.hidden=true;sessionStorage.setItem('tok-registration-later','1');});
+  }
   const favoriteButton = document.querySelector('.favorite-button');
   if (favoriteButton) {
     const slug = favoriteButton.dataset.slug;
@@ -107,6 +136,18 @@
   });
   const accountPage=document.querySelector('.account-page');
   if (accountPage) {
+    const requestForm=document.getElementById('phone-login-request'), verifyForm=document.getElementById('phone-login-verify');
+    const loginMessage=document.getElementById('phone-login-message');
+    requestForm?.addEventListener('submit',async event=>{
+      event.preventDefault();const button=requestForm.querySelector('button');button.disabled=true;
+      try{const body=new URLSearchParams({phone:requestForm.elements.phone.value,next:new URLSearchParams(location.search).get('next')||location.pathname});const response=await fetch('/auth/phone/request/',{method:'POST',headers:{'X-CSRFToken':decodeURIComponent(csrf||''),'Content-Type':'application/x-www-form-urlencoded'},body});const data=await response.json();if(!response.ok)throw Error(data.error||'Не удалось запросить код');loginMessage.textContent=data.message;verifyForm.hidden=false;verifyForm.elements.code.focus();}
+      catch(error){loginMessage.textContent=error.message;}finally{button.disabled=false;}
+    });
+    verifyForm?.addEventListener('submit',async event=>{
+      event.preventDefault();const button=verifyForm.querySelector('button');button.disabled=true;
+      try{const body=new URLSearchParams({code:verifyForm.elements.code.value});const response=await fetch('/auth/phone/verify/',{method:'POST',headers:{'X-CSRFToken':decodeURIComponent(csrf||''),'Content-Type':'application/x-www-form-urlencoded'},body});const data=await response.json();if(!response.ok)throw Error(data.error||'Неверный код');location.assign(data.redirect);}
+      catch(error){loginMessage.textContent=error.message;verifyForm.elements.code.value='';button.disabled=false;}
+    });
     const card = (heading, detail, url) => {
       const article=document.createElement('article'); article.className='account-card';
       const title=document.createElement('strong'); title.textContent=heading;

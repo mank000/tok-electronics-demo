@@ -43,6 +43,10 @@ def verified_init_profile(raw):
     user_id = verify_init_data(raw)
     user = json.loads(dict(parse_qsl(raw, keep_blank_values=True))["user"])
     name = " ".join(str(user.get(field, "")).strip() for field in ("first_name", "last_name")).strip()[:80]
+    from .models import CustomerProfile
+    saved = CustomerProfile.objects.filter(telegram_id=user_id).only("name").first()
+    if saved:
+        name = saved.name
     return {"id": user_id, "name": name or "Покупатель Telegram"}
 
 

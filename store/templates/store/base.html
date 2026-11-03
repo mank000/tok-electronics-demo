@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <title>{% block title %}{{ shop_settings.name }} — {{ shop_settings.subtitle }}{% endblock %}</title>
-  <link rel="stylesheet" href="{% static 'store/style.css' %}?v=5">
+  <link rel="stylesheet" href="{% static 'store/style.css' %}?v=6">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script defer src="{% static 'store/app.js' %}"></script>
 </head>
@@ -38,5 +38,19 @@
       <span><a href="{% url 'document' 'privacy' %}">Обработка данных</a> · <a href="{% url 'document' 'offer' %}">Оферта</a></span>
     </footer>
   </div>
+  <section id="registration-overlay" class="registration-overlay" aria-label="Регистрация" hidden>
+    <div class="registration-card">
+      <span class="eyebrow">ПЕРВЫЙ ВХОД</span>
+      <h2>Пара шагов — и готово</h2>
+      <p>Укажите, как к вам обращаться, и разрешите Telegram передать номер. Он понадобится для заказов и входа с компьютера.</p>
+      <form id="registration-form" class="simple-form">
+        <label>Имя <input name="name" type="text" autocomplete="name" maxlength="80" required></label>
+        <button id="registration-contact" class="button button-outline" type="button">Поделиться номером через Telegram</button>
+        <button id="registration-submit" class="button button-accent" type="submit" disabled>Сохранить и продолжить ↗</button>
+      </form>
+      <p id="registration-message" class="microcopy" role="status" aria-live="polite"></p>
+      <button id="registration-later" class="text-button" type="button">Продолжить без регистрации</button>
+    </div>
+  </section>
 </body>
 </html>

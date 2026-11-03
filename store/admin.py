@@ -8,7 +8,7 @@ from django.utils.decorators import method_decorator
 from django.utils.html import format_html
 from django.views.decorators.debug import sensitive_post_parameters
 from .integrations import encrypt_secret
-from .models import BotUser, Category, Favorite, IntegrationSettings, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductCollection, ProductImage, ProductQuestion, ProductReview, ReturnRequest, ShopSettings, Wish
+from .models import BotUser, Category, CustomerProfile, Favorite, IntegrationSettings, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductCollection, ProductImage, ProductQuestion, ProductReview, ReturnRequest, ShopSettings, Wish
 from .services import queue_buyer, queue_order_changed
 
 
@@ -247,6 +247,16 @@ class NotificationAdmin(ResponsiveAdmin):
 class BotUserAdmin(ResponsiveAdmin):
     list_display = ("telegram_id", "chat_id", "started_at")
     search_fields = ("=telegram_id", "=chat_id")
+
+
+@admin.register(CustomerProfile)
+class CustomerProfileAdmin(ResponsiveAdmin):
+    list_display = ("name", "telegram_id", "registered_at")
+    search_fields = ("name", "=telegram_id")
+    readonly_fields = ("telegram_id", "name", "registered_at")
+
+    def has_add_permission(self, request):
+        return False
 
 
 @admin.register(PaymentAttempt)
