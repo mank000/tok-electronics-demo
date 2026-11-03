@@ -322,6 +322,58 @@ class ShopTests(TestCase):
         self.assertContains(response, "Для Mini App нужен HTTPS-адрес")
         self.assertEqual(IntegrationSettings.objects.count(), 0)
 
+    @override_settings(
+        DEBUG=True, TELEGRAM_LOGIN_CLIENT_ID="", TELEGRAM_LOGIN_CLIENT_SECRET="",
+        YOOKASSA_SHOP_ID="", YOOKASSA_SECRET_KEY="",
+    )
+    def test_admin_payment_and_login_credentials_apply_without_restart(self):
+        from .telegram_login import configured as telegram_login_configured
+        from .yookassa import credentials as yookassa_credentials
+
+        user = get_user_model().objects.create_superuser("admin", "admin@example.test", "test-password")
+        self.client.force_login(user)
+        add_url = reverse("admin:store_integrationsettings_add")
+        data = {
+            "telegram_login_client_id": "telegram-client",
+            "telegram_login_client_secret": "telegram-secret-value",
+            "yookassa_shop_id": "test-shop",
+            "yookassa_secret_key": "test-key-value",
+            "_save": "Сохранить",
+        }
+        self.assertEqual(self.client.post(add_url, data).status_code, 302)
+        saved = IntegrationSettings.objects.get(pk=1)
+        self.assertNotIn(data["telegram_login_client_secret"], saved.telegram_login_secret_ciphertext)
+        self.assertNotIn(data["yookassa_secret_key"], saved.yookassa_secret_ciphertext)
+        config = get_runtime_config()
+        self.assertEqual(config.telegram_login_client_id, "telegram-client")
+        self.assertEqual(config.telegram_login_client_secret, "telegram-secret-value")
+        self.assertEqual(config.yookassa_shop_id, "test-shop")
+        self.assertEqual(yookassa_credentials(), ("test-shop", "test-key-value"))
+        self.assertTrue(telegram_login_configured())
+        self.assertContains(self.client.get(reverse("checkout")), "ЮKassa работает через тестовый магазин")
+        login = self.client.get(reverse("telegram_login_start"))
+        self.assertEqual(login.status_code, 302)
+        self.assertEqual(parse_qs(urlparse(login["Location"]).query)["client_id"], ["telegram-client"])
+
+        change_url = reverse("admin:store_integrationsettings_change", args=[1])
+        page = self.client.get(change_url)
+        self.assertNotContains(page, "telegram-secret-value")
+        self.assertNotContains(page, "test-key-value")
+        data["telegram_login_client_secret"] = ""
+        data["yookassa_secret_key"] = ""
+        self.assertEqual(self.client.post(change_url, data).status_code, 302)
+        self.assertEqual(yookassa_credentials(), ("test-shop", "test-key-value"))
+        self.assertTrue(telegram_login_configured())
+
+        with override_settings(TELEGRAM_LOGIN_CLIENT_ID="env-client", TELEGRAM_LOGIN_CLIENT_SECRET="env-secret",
+                           YOOKASSA_SHOP_ID="env-shop", YOOKASSA_SECRET_KEY="env-key"):
+            data.update({"telegram_login_client_id": "", "yookassa_shop_id": "",
+                         "clear_telegram_login_client_secret": "on", "clear_yookassa_secret_key": "on"})
+            self.assertEqual(self.client.post(change_url, data).status_code, 302)
+            self.assertEqual(yookassa_credentials(), ("env-shop", "env-key"))
+            self.assertEqual(get_runtime_config().telegram_login_client_secret, "env-secret")
+            self.assertTrue(telegram_login_configured())
+
     def test_integration_secrets_admin_requires_superuser_even_with_model_permissions(self):
         staff = get_user_model().objects.create_user("staff", password="test-password", is_staff=True)
         staff.user_permissions.set(Permission.objects.filter(content_type__app_label="store", content_type__model="integrationsettings"))

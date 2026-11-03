@@ -3,6 +3,7 @@ import re
 import uuid
 from django import forms
 from django.conf import settings
+from .integrations import yookassa_configured
 from .models import Order, ProductQuestion, ProductReview, ReturnRequest
 
 
@@ -41,7 +42,7 @@ class CheckoutForm(forms.Form):
             if data.get("payment_gateway") == "demo" and not settings.DEMO_PAYMENTS:
                 self.add_error("payment_gateway", "Демооплата выключена")
             if data.get("payment_gateway") == "yookassa":
-                if not settings.YOOKASSA_SHOP_ID or not settings.YOOKASSA_SECRET_KEY:
+                if not yookassa_configured():
                     self.add_error("payment_gateway", "ЮKassa ещё не настроена")
         return data
 

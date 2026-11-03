@@ -15,7 +15,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_POST, require_http_methods
 from .forms import CheckoutForm, QuestionForm, ReturnForm, ReviewForm
-from .integrations import get_runtime_config
+from .integrations import get_runtime_config, yookassa_configured
 from .models import BotUser, Category, CustomerProfile, Favorite, Order, OrderItem, PaymentAttempt, Product, ProductCollection, ProductQuestion, ProductReview, RecentlyViewed, ReturnRequest, Wish
 from .phone_login import issue_code, normalize_phone, verify_code
 from .security import TelegramAuthError, current_profile, telegram_id_from_request, verified_init_profile
@@ -239,12 +239,12 @@ def registration(request):
 
 def checkout(request):
     if request.method == "GET":
-        yoo_enabled = bool(settings.YOOKASSA_SHOP_ID and settings.YOOKASSA_SECRET_KEY)
+        yoo_enabled = yookassa_configured()
         saved_phone = BotUser.objects.filter(telegram_id=request.session.get("telegram_id")).values_list("phone", flat=True).first() if request.session.get("telegram_id") else ""
         return page(request, "checkout", {"form": CheckoutForm(initial={"checkout_key": uuid.uuid4(), "delivery": "pickup", "payment_method": "online" if settings.DEMO_PAYMENTS or yoo_enabled else "receipt", "payment_gateway": "demo" if settings.DEMO_PAYMENTS else "yookassa", "name": request.session.get("telegram_name", ""), "phone": saved_phone}), "demo_enabled": settings.DEMO_PAYMENTS, "yoo_enabled": yoo_enabled})
     form = CheckoutForm(request.POST)
     if not form.is_valid():
-        return page(request, "checkout", {"form": form, "demo_enabled": settings.DEMO_PAYMENTS, "yoo_enabled": bool(settings.YOOKASSA_SHOP_ID and settings.YOOKASSA_SECRET_KEY)}, 400)
+        return page(request, "checkout", {"form": form, "demo_enabled": settings.DEMO_PAYMENTS, "yoo_enabled": yookassa_configured()}, 400)
     try:
         profile = current_profile(request)
     except TelegramAuthError:
@@ -252,7 +252,7 @@ def checkout(request):
     tg_id = profile["id"] if profile else None
     if not profile and not form.cleaned_data["name"].strip():
         form.add_error("name", "Укажите имя или войдите через Telegram")
-        return page(request, "checkout", {"form": form, "demo_enabled": settings.DEMO_PAYMENTS, "yoo_enabled": bool(settings.YOOKASSA_SHOP_ID and settings.YOOKASSA_SECRET_KEY)}, 400)
+        return page(request, "checkout", {"form": form, "demo_enabled": settings.DEMO_PAYMENTS, "yoo_enabled": yookassa_configured()}, 400)
     key = form.cleaned_data["checkout_key"]
     existing = Order.objects.filter(checkout_key=key).first()
     known = request.session.get("checkout_tokens", {})
@@ -272,7 +272,7 @@ def checkout(request):
             queue_order_created(order)
     except ValueError as exc:
         form.add_error(None, str(exc))
-        return page(request, "checkout", {"form": form, "demo_enabled": settings.DEMO_PAYMENTS, "yoo_enabled": bool(settings.YOOKASSA_SHOP_ID and settings.YOOKASSA_SECRET_KEY)}, 400)
+        return page(request, "checkout", {"form": form, "demo_enabled": settings.DEMO_PAYMENTS, "yoo_enabled": yookassa_configured()}, 400)
     except IntegrityError:
         return HttpResponse("Повторное оформление уже обработано", status=409)
     known[str(key)] = order.access_token
