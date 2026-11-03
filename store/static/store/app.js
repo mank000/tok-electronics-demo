@@ -65,14 +65,70 @@
   const checkoutForm=document.getElementById('checkout-form');
   if (checkoutForm) {
     const delivery=checkoutForm.elements.delivery, payment=checkoutForm.elements.payment_method;
-    const updateDelivery=()=>{document.getElementById('address-field').hidden=delivery.value==='pickup'; const receipt=payment.querySelector('option[value="receipt"]'); receipt.disabled=delivery.value==='region'; if(receipt.disabled && payment.value==='receipt') payment.value='online';};
-    delivery.addEventListener('change',updateDelivery); updateDelivery();
+    const updateDelivery=()=>{document.getElementById('address-field').hidden=delivery.value==='pickup'; const receipt=payment.querySelector('option[value="receipt"]'); receipt.disabled=delivery.value==='region'; if(receipt.disabled && payment.value==='receipt') payment.value='online'; document.getElementById('gateway-field').hidden=payment.value!=='online';};
+    delivery.addEventListener('change',updateDelivery); payment.addEventListener('change',updateDelivery); updateDelivery();
     checkoutForm.elements.cart.value=JSON.stringify(cart());
     quote().then(data=>{const box=document.getElementById('checkout-summary'); box.replaceChildren(); for(const item of data.items){const row=document.createElement('div'); row.className='summary-row'; const label=document.createElement('span'); label.textContent=`${item.name} × ${item.quantity}`; const price=document.createElement('strong'); price.textContent=money(item.subtotal); row.append(label,price); box.append(row);} document.getElementById('checkout-total').textContent=money(data.total);}).catch(error=>{document.getElementById('checkout-summary').textContent=error.message; checkoutForm.querySelector('.submit-order').disabled=true;});
     checkoutForm.addEventListener('submit',()=>{checkoutForm.elements.cart.value=JSON.stringify(cart()); checkoutForm.querySelector('.submit-order').disabled=true;});
     const contact=document.getElementById('request-contact');
     if(tg?.initData && tg.requestContact){contact.hidden=false; contact.addEventListener('click',()=>{tg.requestContact(async granted=>{const note=document.getElementById('contact-note'); note.hidden=false; if(!granted){note.textContent='Контакт не передан. Введите номер вручную.';return;} note.textContent='Ожидаем контакт от бота. Номер можно ввести вручную.'; for(let i=0;i<4;i++){await new Promise(resolve=>setTimeout(resolve,800)); try{const response=await fetch('/api/me/contact/',{headers:{'X-Telegram-Init-Data':tg.initData}}); if(response.ok){const data=await response.json(); if(data.phone){checkoutForm.elements.phone.value=data.phone; note.textContent='Номер получен от бота. Проверьте его перед заказом.';return;}}}catch{}} });});}
   }
-  const payLink=document.getElementById('external-pay-link');
-  if(payLink && tg?.initData && tg.openLink){payLink.addEventListener('click',event=>{event.preventDefault(); tg.openLink(payLink.href);});}
+  const identityHeaders = () => tg?.initData ? {'X-Telegram-Init-Data': tg.initData} : {};
+  const favoriteButton = document.querySelector('.favorite-button');
+  if (favoriteButton) {
+    const slug = favoriteButton.dataset.slug;
+    const label = selected => { favoriteButton.setAttribute('aria-pressed', String(selected)); favoriteButton.textContent = selected ? '♥ В избранном' : '♡ В избранное'; };
+    fetch(`/api/product/${encodeURIComponent(slug)}/favorite/`, {headers: identityHeaders()}).then(r => r.ok ? r.json() : Promise.reject()).then(data => label(data.favorite)).catch(() => {});
+    favoriteButton.addEventListener('click', async () => {
+      favoriteButton.disabled = true;
+      try { const response = await fetch(`/product/${encodeURIComponent(slug)}/favorite/`, {method:'POST', headers:{'X-CSRFToken':decodeURIComponent(csrf || ''), ...identityHeaders()}}); if(!response.ok) throw Error(); label((await response.json()).favorite); }
+      catch { document.querySelector('.share-feedback').textContent='Не удалось сохранить избранное.'; }
+      finally { favoriteButton.disabled = false; }
+    });
+  }
+  document.querySelector('.share-product')?.addEventListener('click', async event => {
+    const url = tg?.initData && event.currentTarget.dataset.miniappUrl ? event.currentTarget.dataset.miniappUrl : `${location.origin}${location.pathname}`;
+    const feedback = document.querySelector('.share-feedback');
+    if (tg?.initData && tg.openTelegramLink) {
+      tg.openTelegramLink(`https://t.me/share/url?url=${encodeURIComponent(url)}&text=${encodeURIComponent('Посмотри этот товар')}`);
+      feedback.textContent='Выберите чат в Telegram, чтобы отправить ссылку.';
+    } else {
+      try { await navigator.clipboard.writeText(url); feedback.textContent='Ссылка скопирована в буфер обмена.'; }
+      catch { feedback.textContent=url; }
+    }
+  });
+  const accountLists = document.querySelectorAll('[data-account-list]');
+  if (accountLists.length) {
+    const card = (heading, detail, url) => {
+      const article=document.createElement('article'); article.className='account-card';
+      const title=document.createElement('strong'); title.textContent=heading;
+      const info=document.createElement('span'); info.textContent=detail;
+      const link=document.createElement('a'); link.className='text-button'; link.href=url; link.textContent='Подробнее ↗';
+      article.append(title, info, link); return article;
+    };
+    fetch('/api/account/', {headers:identityHeaders()}).then(async response => { if(!response.ok) throw Error('Не удалось открыть кабинет'); return response.json(); }).then(data => {
+      for (const list of accountLists) {
+        const type=list.dataset.accountList; list.replaceChildren();
+        if(!data[type].length) { const empty=document.createElement('p'); empty.className='empty-state'; empty.textContent=type==='current'?'Текущих заказов пока нет.':type==='purchases'?'Завершённых покупок пока нет.':type==='wishes'?'Заявок пока нет.':'Сохранённых товаров пока нет.'; list.append(empty); continue; }
+        for (const item of data[type]) {
+          const detail=type==='current'||type==='purchases' ? `${item.created} · ${item.status} · ${money(item.total)} · ${item.items.map(x => x.name).join(', ')}` : type==='wishes' ? `Заявка от ${item.created}` : money(item.price);
+          list.append(card(item.id ? `Заказ №${item.id}` : item.name, detail, item.url));
+        }
+      }
+    }).catch(error => { const box=document.getElementById('account-error'); box.hidden=false; box.textContent=error.message; });
+  }
+  const widgetBox=document.getElementById('payment-form');
+  if(widgetBox) {
+    try {
+      const widget=new window.YooMoneyCheckoutWidget({confirmation_token:widgetBox.dataset.confirmationToken, return_url:new URL(`${widgetBox.dataset.returnUrl}?from=yoo`, location.origin).href, error_callback: error => { const box=document.getElementById('payment-error'); box.hidden=false; box.textContent='Виджет ЮKassa сообщил об ошибке. Попробуйте ещё раз или вернитесь к заказу.'; }});
+      widget.render('payment-form').catch(() => { const box=document.getElementById('payment-error'); box.hidden=false; box.textContent='Не удалось загрузить форму оплаты.'; });
+    } catch { const box=document.getElementById('payment-error'); box.hidden=false; box.textContent='Не удалось загрузить форму оплаты.'; }
+  }
+  document.querySelector('.check-yoo-status')?.addEventListener('click', async event => {
+    const button=event.currentTarget, note=document.getElementById('yoo-status-message'); button.disabled=true; note.textContent='Проверяем платёж…';
+    try { const response=await fetch(button.dataset.url,{method:'POST',headers:{'X-CSRFToken':decodeURIComponent(csrf || ''),...identityHeaders()}}); const data=await response.json(); if(!response.ok) throw Error(data.error || 'Ошибка проверки'); if(data.state==='paid'||data.state==='declined') { history.replaceState(null, '', location.pathname); location.reload(); } else note.textContent='Платёж пока ожидается.'; }
+    catch(error){ note.textContent=error.message; } finally { button.disabled=false; }
+  });
+  if (new URLSearchParams(location.search).has('from') && document.querySelector('.check-yoo-status')) document.querySelector('.check-yoo-status').click();
+
 })();

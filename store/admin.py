@@ -8,8 +8,8 @@ from django.utils.decorators import method_decorator
 from django.utils.html import format_html
 from django.views.decorators.debug import sensitive_post_parameters
 from .integrations import encrypt_secret
-from .models import BotUser, Category, IntegrationSettings, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductImage, ShopSettings, Wish
-from .services import queue_order_changed
+from .models import BotUser, Category, Favorite, IntegrationSettings, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductCollection, ProductImage, ProductQuestion, ProductReview, ReturnRequest, ShopSettings, Wish
+from .services import queue_buyer, queue_order_changed
 
 
 admin.site.site_header = "Управление магазином"
@@ -188,6 +188,8 @@ class ProductAdmin(ResponsiveAdmin):
     search_fields = ("name", "slug", "description")
     prepopulated_fields = {"slug": ("name",)}
     inlines = (ProductImageInline,)
+    filter_horizontal = ("accessories",)
+    fieldsets = ((None, {"fields": ("category", "name", "slug", "description", "specs", "price", "availability", "is_visible", "is_featured")}), ("Доставка и дополнения", {"fields": ("delivery_min_days", "delivery_max_days", "accessories")}))
 
     def get_queryset(self, request):
         return super().get_queryset(request).annotate(_wish_count=Count("wishes"))
@@ -209,7 +211,7 @@ class OrderAdmin(ResponsiveAdmin):
     list_display = ("id", "created_at", "name", "phone", "total", "delivery", "payment_state", "status", "track_number")
     list_filter = ("status", "payment_state", "delivery", "created_at")
     search_fields = ("=id", "name", "phone", "track_number")
-    readonly_fields = ("access_token", "checkout_key", "telegram_id", "name", "phone", "delivery", "address", "comment", "payment_method", "total", "payment_state", "created_at", "updated_at")
+    readonly_fields = ("access_token", "checkout_key", "telegram_id", "name", "phone", "delivery", "address", "comment", "payment_method", "payment_gateway", "total", "payment_state", "created_at", "updated_at")
     inlines = (OrderItemInline,)
 
     def save_model(self, request, obj, form, change):
@@ -249,9 +251,9 @@ class BotUserAdmin(ResponsiveAdmin):
 
 @admin.register(PaymentAttempt)
 class PaymentAttemptAdmin(ResponsiveAdmin):
-    list_display = ("reference", "order", "state", "created_at")
+    list_display = ("reference", "order", "gateway", "state", "created_at")
     list_filter = ("state",)
-    readonly_fields = ("reference", "order", "state", "created_at")
+    readonly_fields = ("reference", "order", "gateway", "provider_id", "confirmation_token", "state", "created_at")
 
 
 @admin.register(PaymentEvent)
@@ -259,3 +261,45 @@ class PaymentEventAdmin(ResponsiveAdmin):
     list_display = ("event_id", "attempt", "status", "received_at")
     list_filter = ("status",)
     readonly_fields = ("event_id", "attempt", "status", "received_at")
+
+
+@admin.register(ProductReview)
+class ProductReviewAdmin(ResponsiveAdmin):
+    list_display = ("product", "author", "rating", "is_published", "created_at")
+    list_filter = ("is_published", "rating")
+    list_editable = ("is_published",)
+    search_fields = ("product__name", "author", "text")
+
+
+@admin.register(ProductQuestion)
+class ProductQuestionAdmin(ResponsiveAdmin):
+    list_display = ("product", "author", "is_published", "created_at")
+    list_filter = ("is_published",)
+    list_editable = ("is_published",)
+    search_fields = ("product__name", "author", "text")
+
+
+@admin.register(ReturnRequest)
+class ReturnRequestAdmin(ResponsiveAdmin):
+    list_display = ("id", "order_item", "quantity", "reason", "status", "created_at")
+    list_filter = ("status", "reason", "created_at")
+    readonly_fields = ("order_item", "quantity", "reason", "comment", "created_at")
+
+    def save_model(self, request, obj, form, change):
+        old_status = ReturnRequest.objects.get(pk=obj.pk).status if change else None
+        super().save_model(request, obj, form, change)
+        if old_status and old_status != obj.status:
+            queue_buyer(obj.order_item.order, f"Заявка на возврат №{obj.pk}: статус «{obj.get_status_display()}».")
+
+
+@admin.register(ProductCollection)
+class ProductCollectionAdmin(ResponsiveAdmin):
+    list_display = ("title", "is_visible", "order")
+    list_editable = ("is_visible", "order")
+    filter_horizontal = ("products",)
+
+
+@admin.register(Favorite)
+class FavoriteAdmin(ResponsiveAdmin):
+    list_display = ("product", "telegram_id", "browser_session", "created_at")
+    readonly_fields = ("product", "telegram_id", "browser_session", "created_at")

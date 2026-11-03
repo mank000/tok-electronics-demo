@@ -35,3 +35,5 @@ PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "")
 SHOP_CHAT_ID = os.environ.get("SHOP_CHAT_ID", "")
 PAYMENT_WEBHOOK_SECRET = os.environ.get("PAYMENT_WEBHOOK_SECRET", "")
 DEMO_PAYMENTS = DEBUG and os.environ.get("DEMO_PAYMENTS", "0") == "1"
+YOOKASSA_SHOP_ID = os.environ.get("YOOKASSA_SHOP_ID", "")
+YOOKASSA_SECRET_KEY = os.environ.get("YOOKASSA_SECRET_KEY", "")
