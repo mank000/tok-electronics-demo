@@ -133,6 +133,7 @@ class BotUser(models.Model):
     telegram_id = models.BigIntegerField("Telegram ID", unique=True)
     chat_id = models.BigIntegerField("Чат с ботом")
     phone = models.CharField("Телефон из разрешённого контакта", max_length=32, blank=True)
+    phone_digits = models.CharField("Номер для поиска", max_length=15, blank=True, db_index=True)
     started_at = models.DateTimeField("Разрешил сообщения", auto_now_add=True)
 
     class Meta:
@@ -141,6 +142,29 @@ class BotUser(models.Model):
 
     def __str__(self):
         return str(self.telegram_id)
+
+
+class CustomerProfile(models.Model):
+    telegram_id = models.BigIntegerField("Telegram ID", unique=True)
+    name = models.CharField("Имя покупателя", max_length=80)
+    registered_at = models.DateTimeField("Зарегистрирован", auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Покупатель Telegram"
+        verbose_name_plural = "Покупатели Telegram"
+
+    def __str__(self):
+        return self.name
+
+
+class BrowserLoginCode(models.Model):
+    telegram_id = models.BigIntegerField("Telegram ID", unique=True)
+    code_hash = models.CharField(max_length=64)
+    sent_at = models.DateTimeField()
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveSmallIntegerField(default=0)
+    window_started_at = models.DateTimeField()
+    sends_in_window = models.PositiveSmallIntegerField(default=0)
 
 
 class Order(models.Model):

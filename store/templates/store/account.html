@@ -1,3 +1,44 @@
-{% extends 'store/base.html' %}{% block title %}Личный кабинет — {{ shop_settings.name }}{% endblock %}{% block content %}<section class="page-wrap account-page" data-account-section="{{ account_section|default:'overview' }}"><div class="page-heading"><span class="eyebrow">ВАШЕ ПРОСТРАНСТВО</span><h1>{% if account_section == 'orders' %}Текущие заказы{% elif account_section == 'purchases' %}Покупки{% elif account_section == 'wishes' %}Хочу заказать{% elif account_section == 'favorites' %}Избранное{% else %}Личный кабинет{% endif %}</h1><p id="account-greeting">Войдите через Telegram, чтобы видеть одни и те же данные в Mini App и браузере.</p></div>
-{% if request.GET.login_error %}<p class="notice notice-error">Вход не завершён. Попробуйте ещё раз.</p>{% endif %}<div id="account-login" class="account-login" hidden><h2>Вход через Telegram</h2><p>Ваши заказы, избранное и покупки будут доступны в Chrome и Mini App. Телефон для входа не запрашивается.</p>{% if telegram_login_ready %}<a class="button button-accent" href="{% url 'telegram_login_start' %}?next={{ request.path|urlencode }}">Войти через Telegram ↗</a>{% else %}<p class="notice">Вход на сайте появится после настройки Telegram Login в BotFather.</p>{% endif %}</div>
-<div id="account-content" hidden>{% if account_section %}<a class="text-button" href="{% url 'account' %}">← В кабинет</a><div class="account-list" data-account-list="{% if account_section == 'orders' %}current{% else %}{{ account_section }}{% endif %}"><p class="loading">Загружаем…</p></div>{% else %}<nav class="account-menu" aria-label="Разделы кабинета"><a href="{% url 'account_section' 'orders' %}"><span>◫</span><strong>Текущие заказы</strong><span>↗</span></a><a href="{% url 'account_section' 'purchases' %}"><span>✓</span><strong>Покупки</strong><span>↗</span></a><a href="{% url 'account_section' 'wishes' %}"><span>✦</span><strong>Хочу заказать</strong><span>↗</span></a><a href="{% url 'account_section' 'favorites' %}"><span>♥</span><strong>Избранное</strong><span>↗</span></a></nav><section class="account-recent"><div class="section-heading"><div><span class="eyebrow">ИСТОРИЯ ПРОСМОТРОВ</span><h2>Вы смотрели</h2></div></div><div id="recent-track" class="recent-track"><p class="loading">Загружаем…</p></div></section>{% endif %}<form method="post" action="{% url 'telegram_logout' %}" class="account-logout browser-only">{% csrf_token %}<button class="text-button" type="submit">Выйти из аккаунта</button></form></div><p id="account-error" class="notice notice-error" hidden></p></section>{% endblock %}
+{% extends 'store/base.html' %}
+{% block title %}Личный кабинет — {{ shop_settings.name }}{% endblock %}
+{% block content %}
+<section class="page-wrap account-page" data-account-section="{{ account_section|default:'overview' }}">
+  <div class="page-heading">
+    <span class="eyebrow">ВАШЕ ПРОСТРАНСТВО</span>
+    <h1>{% if account_section == 'orders' %}Текущие заказы{% elif account_section == 'purchases' %}Покупки{% elif account_section == 'wishes' %}Хочу заказать{% elif account_section == 'favorites' %}Избранное{% else %}Личный кабинет{% endif %}</h1>
+    <p id="account-greeting">Войдите, чтобы видеть заказы и избранное в Mini App и браузере.</p>
+  </div>
+  {% if request.GET.login_error %}<p class="notice notice-error">Вход не завершён. Попробуйте ещё раз.</p>{% endif %}
+  <div id="account-login" class="account-login" hidden>
+    <h2>Вход по коду в Telegram</h2>
+    <p>Укажите номер, которым вы поделились при регистрации в Mini App. Код придёт в чат с нашим ботом.</p>
+    {% if phone_login_ready %}
+    <form id="phone-login-request" class="simple-form">
+      <label>Номер телефона <input type="tel" name="phone" autocomplete="tel" placeholder="+7 900 123-45-67" required></label>
+      <button class="button button-accent" type="submit">Получить код ↗</button>
+    </form>
+    <form id="phone-login-verify" class="simple-form" hidden>
+      <label>Код из сообщения бота <input type="text" name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label>
+      <button class="button button-dark" type="submit">Войти</button>
+    </form>
+    <p id="phone-login-message" class="microcopy" role="status" aria-live="polite"></p>
+    {% else %}<p class="notice">Вход по коду появится после настройки бота.</p>{% endif %}
+    {% if telegram_login_ready %}<p class="microcopy">Можно также <a class="text-button" href="{% url 'telegram_login_start' %}?next={{ request.path|urlencode }}">войти через Telegram</a>.</p>{% endif %}
+  </div>
+  <div id="account-content" hidden>
+    {% if account_section %}
+      <a class="text-button" href="{% url 'account' %}">← В кабинет</a>
+      <div class="account-list" data-account-list="{% if account_section == 'orders' %}current{% else %}{{ account_section }}{% endif %}"><p class="loading">Загружаем…</p></div>
+    {% else %}
+      <nav class="account-menu" aria-label="Разделы кабинета">
+        <a href="{% url 'account_section' 'orders' %}"><span>◫</span><strong>Текущие заказы</strong><span>↗</span></a>
+        <a href="{% url 'account_section' 'purchases' %}"><span>✓</span><strong>Покупки</strong><span>↗</span></a>
+        <a href="{% url 'account_section' 'wishes' %}"><span>✦</span><strong>Хочу заказать</strong><span>↗</span></a>
+        <a href="{% url 'account_section' 'favorites' %}"><span>♥</span><strong>Избранное</strong><span>↗</span></a>
+      </nav>
+      <section class="account-recent"><div class="section-heading"><div><span class="eyebrow">ИСТОРИЯ ПРОСМОТРОВ</span><h2>Вы смотрели</h2></div></div><div id="recent-track" class="recent-track"><p class="loading">Загружаем…</p></div></section>
+    {% endif %}
+    <form method="post" action="{% url 'telegram_logout' %}" class="account-logout browser-only">{% csrf_token %}<button class="text-button" type="submit">Выйти из аккаунта</button></form>
+  </div>
+  <p id="account-error" class="notice notice-error" hidden></p>
+</section>
+{% endblock %}
