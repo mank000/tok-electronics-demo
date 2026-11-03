@@ -342,13 +342,20 @@ class ShopTests(TestCase):
         self.assertContains(response, 'name="category" value="tech"')
         self.assertContains(response, "Товар")
 
-    def test_csrf_rejects_null_origin_and_accepts_local_origin(self):
+    @override_settings(DEBUG=True)
+    def test_local_checkout_and_cart_accept_null_origin_with_csrf_token(self):
         client = Client(enforce_csrf_checks=True)
         client.get(reverse("checkout"), HTTP_HOST="localhost:8008")
         csrf_token = client.cookies["csrftoken"].value
         data = {"name": "Покупатель", "phone": "+7 900 123 45 67", "delivery": "pickup", "address": "", "comment": "", "payment_method": "online", "consent": "on", "cart": json.dumps({str(self.product.pk): 1}), "checkout_key": str(uuid.uuid4()), "csrfmiddlewaretoken": csrf_token}
-        self.assertEqual(client.post(reverse("checkout"), data, HTTP_HOST="localhost:8008", HTTP_ORIGIN="null").status_code, 403)
-        self.assertEqual(client.post(reverse("checkout"), data, HTTP_HOST="localhost:8008", HTTP_ORIGIN="http://localhost:8008").status_code, 302)
+        self.assertEqual(client.post(reverse("checkout"), data, HTTP_HOST="localhost:8008", HTTP_ORIGIN="null").status_code, 302)
+        self.assertEqual(Order.objects.count(), 1)
+        quote = client.post(reverse("cart_quote"), json.dumps({"cart": {str(self.product.pk): 1}}), content_type="application/json", HTTP_HOST="localhost:8008", HTTP_ORIGIN="null", HTTP_X_CSRFTOKEN=csrf_token)
+        self.assertEqual(quote.status_code, 200)
+        self.assertEqual(client.post(reverse("cart_quote"), "{}", content_type="application/json", HTTP_HOST="localhost:8008", HTTP_ORIGIN="null").status_code, 403)
+        with override_settings(DEBUG=False):
+            self.assertEqual(client.post(reverse("checkout"), data, HTTP_HOST="localhost:8008", HTTP_ORIGIN="null").status_code, 403)
+        self.assertEqual(client.post(reverse("checkout"), data, HTTP_HOST="localhost:8008", HTTP_ORIGIN="null", HTTP_X_FORWARDED_PROTO="https").status_code, 403)
 
     @override_settings(DEBUG=True)
     def test_local_admin_login_allows_null_origin_only_with_csrf_token(self):
