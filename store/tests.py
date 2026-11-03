@@ -350,6 +350,25 @@ class ShopTests(TestCase):
         self.assertEqual(client.post(reverse("checkout"), data, HTTP_HOST="localhost:8008", HTTP_ORIGIN="null").status_code, 403)
         self.assertEqual(client.post(reverse("checkout"), data, HTTP_HOST="localhost:8008", HTTP_ORIGIN="http://localhost:8008").status_code, 302)
 
+    @override_settings(DEBUG=True)
+    def test_local_admin_login_allows_null_origin_only_with_csrf_token(self):
+        login_url = reverse("admin:login")
+        get_user_model().objects.create_superuser("local_admin", "admin@example.test", "test-password")
+        client = Client(enforce_csrf_checks=True)
+        client.get(login_url, HTTP_HOST="localhost:8008")
+        token = client.cookies["csrftoken"].value
+        credentials = {"username": "local_admin", "password": "test-password", "csrfmiddlewaretoken": token}
+        self.assertEqual(client.post(login_url, credentials, HTTP_HOST="localhost:8008", HTTP_ORIGIN="null").status_code, 302)
+        self.assertEqual(client.get(reverse("admin:index"), HTTP_HOST="localhost:8008").status_code, 200)
+        credentials["csrfmiddlewaretoken"] = client.cookies["csrftoken"].value
+        self.assertEqual(client.post(login_url, {"username": "wrong", "password": "wrong"}, HTTP_HOST="localhost:8008", HTTP_ORIGIN="null").status_code, 403)
+        with override_settings(DEBUG=False):
+            self.assertEqual(client.post(login_url, credentials, HTTP_HOST="localhost:8008", HTTP_ORIGIN="null").status_code, 403)
+        with override_settings(ALLOWED_HOSTS=["example.test"]):
+            self.assertEqual(client.post(login_url, credentials, HTTP_HOST="example.test", HTTP_ORIGIN="null").status_code, 403)
+        self.assertEqual(client.post(login_url, credentials, HTTP_HOST="localhost:8008", HTTP_ORIGIN="null", HTTP_X_FORWARDED_PROTO="https").status_code, 403)
+        self.assertEqual(client.post(login_url, credentials, HTTP_HOST="localhost:8008", HTTP_ORIGIN="http://attacker.test").status_code, 403)
+
 
 class SeedTests(TestCase):
     def test_seed_is_idempotent_and_images_are_local_webp(self):
