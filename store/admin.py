@@ -3,7 +3,7 @@ import re
 from django import forms
 from django.contrib import admin
 from django.conf import settings
-from django.db.models import Count
+from django.db.models import Count, F
 from django.utils.decorators import method_decorator
 from django.utils.html import format_html
 from django.views.decorators.debug import sensitive_post_parameters
@@ -265,10 +265,21 @@ class PaymentEventAdmin(ResponsiveAdmin):
 
 @admin.register(ProductReview)
 class ProductReviewAdmin(ResponsiveAdmin):
-    list_display = ("product", "author", "rating", "is_published", "created_at")
+    list_display = ("product", "author", "rating", "order_item", "is_published", "created_at")
     list_filter = ("is_published", "rating")
-    list_editable = ("is_published",)
     search_fields = ("product__name", "author", "text")
+    readonly_fields = ("product", "author", "telegram_id", "order_item", "rating", "text", "created_at")
+    actions = ("publish_reviews", "hide_reviews")
+
+    @admin.action(description="Опубликовать проверенные отзывы")
+    def publish_reviews(self, request, queryset):
+        queryset.filter(telegram_id__isnull=False, order_item__order__status=Order.Status.DELIVERED,
+            order_item__order__payment_state__in=("paid", "receipt"),
+            order_item__order__telegram_id=F("telegram_id"), order_item__product_id=F("product_id")).update(is_published=True)
+
+    @admin.action(description="Скрыть выбранные отзывы")
+    def hide_reviews(self, request, queryset):
+        queryset.update(is_published=False)
 
 
 @admin.register(ProductQuestion)

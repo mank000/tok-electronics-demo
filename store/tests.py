@@ -7,7 +7,7 @@ import time
 import uuid
 from decimal import Decimal
 from unittest.mock import Mock, patch
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 from PIL import Image
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
@@ -16,7 +16,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from .integrations import encrypt_secret, get_runtime_config
-from .models import BotUser, Category, Favorite, IntegrationSettings, Notification, Order, PaymentAttempt, PaymentEvent, Product, ProductImage, ProductQuestion, ProductReview, ReturnRequest, ShopSettings
+from .models import BotUser, Category, Favorite, IntegrationSettings, Notification, Order, PaymentAttempt, PaymentEvent, Product, ProductImage, ProductQuestion, ProductReview, RecentlyViewed, ReturnRequest, ShopSettings
 from .security import TelegramAuthError, verify_init_data
 from .services import flush_notifications, process_payment_event, queue_order_changed, queue_shop, retry_buyer_notifications, signed_event
 
@@ -209,7 +209,7 @@ class ShopTests(TestCase):
         self.product.availability = "preorder"
         self.product.save()
         self.assertEqual(self.checkout().status_code, 400)
-        response = self.client.post(reverse("wish", args=[self.product.slug]), {"name": "Тест", "contact": "+7 900 000 00 00"})
+        response = self.client.post(reverse("wish", args=[self.product.slug]), HTTP_X_TELEGRAM_INIT_DATA=telegram_data())
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.product.wishes.count(), 1)
         self.assertTrue(Notification.objects.filter(kind="shop", text__contains="Хочу такой").exists())
@@ -417,20 +417,17 @@ class CommerceFeaturesTests(TestCase):
         data.update(changes)
         return (client or self.client).post(reverse("checkout"), data)
 
-    def test_browser_cabinet_and_favorites_are_session_scoped(self):
+    def test_browser_account_requires_telegram_login(self):
         self.assertEqual(self.checkout().status_code, 302)
-        order = Order.objects.get()
-        self.assertEqual(self.client.get(reverse("account_data")).json()["current"][0]["id"], order.pk)
-        self.assertEqual(self.client.post(reverse("favorite_toggle", args=[self.product.slug])).json()["favorite"], True)
-        self.assertEqual(len(self.client.get(reverse("account_data")).json()["favorites"]), 1)
+        self.assertEqual(self.client.get(reverse("account_data")).status_code, 401)
+        self.assertEqual(self.client.post(reverse("favorite_toggle", args=[self.product.slug])).status_code, 401)
         stranger = Client()
-        self.assertEqual(stranger.get(reverse("account_data")).json()["current"], [])
-        self.assertEqual(stranger.get(reverse("account_data")).json()["favorites"], [])
-        self.assertEqual(stranger.post(reverse("favorite_toggle", args=[self.product.slug])).json()["favorite"], True)
-        self.assertEqual(Favorite.objects.count(), 2)
+        self.assertEqual(stranger.get(reverse("account_data")).status_code, 401)
+        self.assertEqual(Favorite.objects.count(), 0)
 
     def test_telegram_cabinet_and_favorites_are_identity_scoped(self):
         self.assertEqual(self.checkout(tg_init_data=telegram_data(123)).status_code, 302)
+        self.assertEqual(Order.objects.get().name, "Тест")
         self.client.post(reverse("favorite_toggle", args=[self.product.slug]), HTTP_X_TELEGRAM_INIT_DATA=telegram_data(123))
         mine = self.client.get(reverse("account_data"), HTTP_X_TELEGRAM_INIT_DATA=telegram_data(123)).json()
         others = self.client.get(reverse("account_data"), HTTP_X_TELEGRAM_INIT_DATA=telegram_data(456)).json()
@@ -442,20 +439,104 @@ class CommerceFeaturesTests(TestCase):
 
     def test_reviews_questions_moderation_and_related_products(self):
         sibling = Product.objects.create(category=self.product.category, name="Другой", slug="other", description="Описание", price=Decimal("900.00"))
-        self.assertEqual(self.client.post(reverse("review", args=[self.product.slug]), {"author": "Аня", "rating": 5, "text": "Хороший товар"}).status_code, 302)
-        self.assertEqual(self.client.post(reverse("question", args=[self.product.slug]), {"author": "Иван", "text": "Есть гарантия?"}).status_code, 302)
+        auth = {"HTTP_X_TELEGRAM_INIT_DATA": telegram_data(123)}
+        review_url = reverse("review", args=[self.product.slug])
+        self.assertEqual(self.client.post(review_url, {"rating": 5, "text": "Хороший товар"}, **auth).status_code, 403)
+        self.assertEqual(self.checkout(tg_init_data=telegram_data(123)).status_code, 302)
+        order = Order.objects.get()
+        self.assertEqual(self.client.post(review_url, {"rating": 5, "text": "Хороший товар"}, **auth).status_code, 403)
+        order.status = Order.Status.DELIVERED
+        order.save()
+        self.assertEqual(self.client.post(review_url, {"rating": 5, "text": "Хороший товар"}, **auth).status_code, 403)
+        order.payment_state = "paid"
+        order.save()
+        self.assertEqual(self.client.post(review_url, {"author": "Подмена", "rating": 5, "text": "Хороший товар"}, **auth).status_code, 302)
+        self.assertEqual(self.client.post(review_url, {"rating": 4, "text": "Повтор"}, **auth).status_code, 400)
+        self.assertEqual(self.client.post(reverse("question", args=[self.product.slug]), {"author": "Подмена", "text": "Есть гарантия?"}, **auth).status_code, 302)
+        review = ProductReview.objects.get()
+        self.assertEqual(review.author, "Тест")
+        self.assertEqual(review.order_item, order.items.get())
+        self.assertEqual(ProductQuestion.objects.get().author, "Тест")
         page = self.client.get(reverse("product", args=[self.product.slug]))
         self.assertContains(page, "Другой")
         self.assertContains(page, "Примерная дата доставки")
         self.assertNotContains(page, "Хороший товар")
         self.assertNotContains(page, "Есть гарантия?")
-        ProductReview.objects.update(is_published=True)
+        admin_user = get_user_model().objects.create_superuser("review_admin", "admin@example.test", "test-password")
+        self.client.force_login(admin_user)
+        from django.contrib import admin
+        model_admin = admin.site._registry[ProductReview]
+        model_admin.publish_reviews(None, ProductReview.objects.all())
+        self.assertTrue(ProductReview.objects.get().is_published)
         ProductQuestion.objects.update(is_published=True, answer="Да")
         page = self.client.get(reverse("product", args=[self.product.slug]))
         self.assertContains(page, "Хороший товар")
         self.assertContains(page, "Есть гарантия?")
         self.assertContains(page, "Да")
         self.assertEqual(sibling.category_id, self.product.category_id)
+
+    def test_account_sections_and_recent_views(self):
+        auth = {"HTTP_X_TELEGRAM_INIT_DATA": telegram_data(123)}
+        self.assertEqual(self.client.post(reverse("record_view", args=[self.product.slug]), **auth).status_code, 200)
+        self.assertEqual(self.client.post(reverse("favorite_toggle", args=[self.product.slug]), **auth).json()["favorite"], True)
+        self.assertEqual(RecentlyViewed.objects.filter(telegram_id=123).count(), 1)
+        for section in ("orders", "purchases", "wishes", "favorites"):
+            self.assertEqual(self.client.get(reverse("account_section", args=[section])).status_code, 200)
+        data = self.client.get(reverse("account_data"), **auth).json()
+        self.assertEqual(data["profile"]["name"], "Тест")
+        self.assertEqual(len(data["recent"]), 1)
+        self.assertEqual(len(data["favorites"]), 1)
+        self.assertNotIn("phone", data["profile"])
+
+    @override_settings(DEBUG=True, TELEGRAM_LOGIN_CLIENT_ID="12345", TELEGRAM_LOGIN_CLIENT_SECRET="oidc-secret")
+    def test_browser_telegram_login_links_previous_order_and_uses_verified_claims(self):
+        self.assertEqual(self.checkout().status_code, 302)
+        order = Order.objects.get()
+        self.assertIsNone(order.telegram_id)
+        start = self.client.get(reverse("telegram_login_start"), {"next": reverse("account_section", args=["purchases"])})
+        self.assertEqual(start.status_code, 302)
+        params = parse_qs(urlparse(start["Location"]).query)
+        self.assertEqual(params["scope"], ["openid profile"])
+        self.assertEqual(params["code_challenge_method"], ["S256"])
+        flow = self.client.session["telegram_oidc_flow"]
+        claims = {"id": 123, "sub": "telegram-user", "name": "Имя из Telegram", "nonce": flow["nonce"]}
+        with patch("store.telegram_login.requests.post", return_value=Mock(status_code=200, json=lambda: {"id_token": "signed-token"})) as post, \
+                patch("store.telegram_login.jwt.PyJWKClient") as jwks, \
+                patch("store.telegram_login.jwt.decode", return_value=claims) as decode:
+            jwks.return_value.get_signing_key_from_jwt.return_value.key = "public-key"
+            callback = self.client.get(reverse("telegram_login_callback"), {"state": params["state"][0], "code": "short-code"})
+        self.assertEqual(callback.status_code, 302)
+        self.assertEqual(callback["Location"], reverse("account_section", args=["purchases"]))
+        self.assertEqual(post.call_args.kwargs["data"]["code_verifier"], flow["verifier"])
+        self.assertEqual(decode.call_args.kwargs["algorithms"], ["RS256"])
+        self.assertEqual(decode.call_args.kwargs["audience"], "12345")
+        order.refresh_from_db()
+        self.assertEqual(order.telegram_id, 123)
+        account = self.client.get(reverse("account_data")).json()
+        self.assertEqual(account["profile"], {"name": "Имя из Telegram"})
+        self.assertEqual(account["current"][0]["id"], order.pk)
+        self.assertNotIn("phone", account["profile"])
+        self.assertEqual(self.client.post(reverse("favorite_toggle", args=[self.product.slug])).json()["favorite"], True)
+        self.assertEqual(self.client.post(reverse("telegram_logout")).status_code, 302)
+        self.assertEqual(self.client.get(reverse("account_data")).status_code, 401)
+
+    @override_settings(DEBUG=True, TELEGRAM_LOGIN_CLIENT_ID="12345", TELEGRAM_LOGIN_CLIENT_SECRET="oidc-secret")
+    def test_browser_telegram_login_rejects_wrong_state_and_nonce(self):
+        self.client.get(reverse("telegram_login_start"))
+        with patch("store.telegram_login.requests.post") as post:
+            result = self.client.get(reverse("telegram_login_callback"), {"state": "forged", "code": "code"})
+        self.assertEqual(result.status_code, 302)
+        post.assert_not_called()
+        self.assertEqual(self.client.get(reverse("account_data")).status_code, 401)
+        start = self.client.get(reverse("telegram_login_start"))
+        state = parse_qs(urlparse(start["Location"]).query)["state"][0]
+        with patch("store.telegram_login.requests.post", return_value=Mock(status_code=200, json=lambda: {"id_token": "signed-token"})), \
+                patch("store.telegram_login.jwt.PyJWKClient") as jwks, \
+                patch("store.telegram_login.jwt.decode", return_value={"id": 123, "sub": "telegram-user", "name": "Тест", "nonce": "wrong"}):
+            jwks.return_value.get_signing_key_from_jwt.return_value.key = "public-key"
+            result = self.client.get(reverse("telegram_login_callback"), {"state": state, "code": "code"})
+        self.assertEqual(result.status_code, 302)
+        self.assertEqual(self.client.get(reverse("account_data")).status_code, 401)
 
     def test_return_request_only_for_delivered_order_and_once_per_item(self):
         self.checkout()

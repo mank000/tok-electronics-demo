@@ -7,7 +7,7 @@ from .models import Order, ProductQuestion, ProductReview, ReturnRequest
 
 
 class CheckoutForm(forms.Form):
-    name = forms.CharField(max_length=100, label="Имя")
+    name = forms.CharField(max_length=100, label="Имя", required=False)
     phone = forms.CharField(max_length=32, label="Телефон")
     delivery = forms.ChoiceField(choices=Order.Delivery.choices, label="Получение")
     address = forms.CharField(required=False, widget=forms.Textarea(attrs={"rows": 2}), label="Адрес")
@@ -46,22 +46,17 @@ class CheckoutForm(forms.Form):
         return data
 
 
-class WishForm(forms.Form):
-    name = forms.CharField(max_length=100, label="Имя")
-    contact = forms.CharField(max_length=120, label="Телефон или Telegram")
-
-
 class ReviewForm(forms.ModelForm):
     class Meta:
         model = ProductReview
-        fields = ("author", "rating", "text")
+        fields = ("rating", "text")
         widgets = {"text": forms.Textarea(attrs={"rows": 4})}
 
 
 class QuestionForm(forms.ModelForm):
     class Meta:
         model = ProductQuestion
-        fields = ("author", "text")
+        fields = ("text",)
         widgets = {"text": forms.Textarea(attrs={"rows": 3})}
 
 
