@@ -16,7 +16,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from .integrations import encrypt_secret, get_runtime_config
-from .models import BotUser, Category, IntegrationSettings, Notification, Order, PaymentAttempt, PaymentEvent, Product, ProductImage, ShopSettings
+from .models import BotUser, Category, Favorite, IntegrationSettings, Notification, Order, PaymentAttempt, PaymentEvent, Product, ProductImage, ProductQuestion, ProductReview, ReturnRequest, ShopSettings
 from .security import TelegramAuthError, verify_init_data
 from .services import flush_notifications, process_payment_event, queue_order_changed, queue_shop, retry_buyer_notifications, signed_event
 
@@ -397,11 +397,111 @@ class SeedTests(TestCase):
         with tempfile.TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
             call_command("seed_catalog", verbosity=0)
             call_command("seed_catalog", verbosity=0)
-            self.assertEqual(Product.objects.count(), 24)
-            self.assertEqual(ProductImage.objects.count(), 26)
+            self.assertEqual(Product.objects.count(), 29)
+            self.assertEqual(ProductImage.objects.count(), 31)
             self.assertTrue(all(product.images.exists() for product in Product.objects.all()))
             image = ProductImage.objects.first()
             with Image.open(image.image.path) as source, Image.open(image.thumb.path) as thumb:
                 self.assertEqual(source.format, "WEBP")
                 self.assertEqual(thumb.format, "WEBP")
                 self.assertLessEqual(max(thumb.size), 480)
+
+@override_settings(BOT_TOKEN=TOKEN, PAYMENT_WEBHOOK_SECRET=SECRET, DEMO_PAYMENTS=True)
+class CommerceFeaturesTests(TestCase):
+    def setUp(self):
+        category = Category.objects.create(name="Смартфоны", slug="phones")
+        self.product = Product.objects.create(category=category, name="Телефон", slug="phone", description="Описание", price=Decimal("1500.00"))
+
+    def checkout(self, client=None, **changes):
+        data = {"name": "Покупатель", "phone": "+7 900 123 45 67", "delivery": "pickup", "address": "", "comment": "", "payment_method": "online", "payment_gateway": "demo", "consent": "on", "cart": json.dumps({str(self.product.pk): 1}), "checkout_key": str(uuid.uuid4())}
+        data.update(changes)
+        return (client or self.client).post(reverse("checkout"), data)
+
+    def test_browser_cabinet_and_favorites_are_session_scoped(self):
+        self.assertEqual(self.checkout().status_code, 302)
+        order = Order.objects.get()
+        self.assertEqual(self.client.get(reverse("account_data")).json()["current"][0]["id"], order.pk)
+        self.assertEqual(self.client.post(reverse("favorite_toggle", args=[self.product.slug])).json()["favorite"], True)
+        self.assertEqual(len(self.client.get(reverse("account_data")).json()["favorites"]), 1)
+        stranger = Client()
+        self.assertEqual(stranger.get(reverse("account_data")).json()["current"], [])
+        self.assertEqual(stranger.get(reverse("account_data")).json()["favorites"], [])
+        self.assertEqual(stranger.post(reverse("favorite_toggle", args=[self.product.slug])).json()["favorite"], True)
+        self.assertEqual(Favorite.objects.count(), 2)
+
+    def test_telegram_cabinet_and_favorites_are_identity_scoped(self):
+        self.assertEqual(self.checkout(tg_init_data=telegram_data(123)).status_code, 302)
+        self.client.post(reverse("favorite_toggle", args=[self.product.slug]), HTTP_X_TELEGRAM_INIT_DATA=telegram_data(123))
+        mine = self.client.get(reverse("account_data"), HTTP_X_TELEGRAM_INIT_DATA=telegram_data(123)).json()
+        others = self.client.get(reverse("account_data"), HTTP_X_TELEGRAM_INIT_DATA=telegram_data(456)).json()
+        self.assertEqual(len(mine["current"]), 1)
+        self.assertEqual(len(mine["favorites"]), 1)
+        self.assertEqual(others["current"], [])
+        self.assertEqual(others["favorites"], [])
+        self.assertEqual(self.client.get(reverse("account_data"), HTTP_X_TELEGRAM_INIT_DATA="bad").status_code, 403)
+
+    def test_reviews_questions_moderation_and_related_products(self):
+        sibling = Product.objects.create(category=self.product.category, name="Другой", slug="other", description="Описание", price=Decimal("900.00"))
+        self.assertEqual(self.client.post(reverse("review", args=[self.product.slug]), {"author": "Аня", "rating": 5, "text": "Хороший товар"}).status_code, 302)
+        self.assertEqual(self.client.post(reverse("question", args=[self.product.slug]), {"author": "Иван", "text": "Есть гарантия?"}).status_code, 302)
+        page = self.client.get(reverse("product", args=[self.product.slug]))
+        self.assertContains(page, "Другой")
+        self.assertContains(page, "Примерная дата доставки")
+        self.assertNotContains(page, "Хороший товар")
+        self.assertNotContains(page, "Есть гарантия?")
+        ProductReview.objects.update(is_published=True)
+        ProductQuestion.objects.update(is_published=True, answer="Да")
+        page = self.client.get(reverse("product", args=[self.product.slug]))
+        self.assertContains(page, "Хороший товар")
+        self.assertContains(page, "Есть гарантия?")
+        self.assertContains(page, "Да")
+        self.assertEqual(sibling.category_id, self.product.category_id)
+
+    def test_return_request_only_for_delivered_order_and_once_per_item(self):
+        self.checkout()
+        order = Order.objects.get()
+        item = order.items.get()
+        url = reverse("request_return", args=[order.access_token, item.pk])
+        payload = {"quantity": 1, "reason": "defect", "comment": "Не включается"}
+        self.assertEqual(self.client.post(url, payload).status_code, 400)
+        order.status = "delivered"
+        order.save()
+        self.assertEqual(self.client.post(url, payload).status_code, 302)
+        self.assertEqual(self.client.post(url, payload).status_code, 400)
+        self.assertEqual(ReturnRequest.objects.count(), 1)
+        self.assertTrue(Notification.objects.filter(kind="shop", text__contains="Заявка на возврат").exists())
+
+    @override_settings(YOOKASSA_SHOP_ID="test-shop", YOOKASSA_SECRET_KEY="test-secret")
+    def test_yookassa_widget_and_verified_status(self):
+        self.assertEqual(self.checkout(payment_gateway="yookassa").status_code, 302)
+        order = Order.objects.get()
+        attempt = order.attempts.get()
+        def payment(status):
+            return {"id": "provider-1", "test": True, "amount": {"value": "1500.00", "currency": "RUB"}, "metadata": {"order_id": str(order.pk), "attempt": str(attempt.reference)}, "status": status, "confirmation": {"confirmation_token": "ct-test"}}
+        with patch("requests.post", return_value=Mock(status_code=200, json=lambda: payment("pending"))) as create:
+            response = self.client.get(reverse("yoo_pay", args=[order.access_token]))
+        self.assertContains(response, "ct-test")
+        self.assertEqual(create.call_args.kwargs["headers"]["Idempotence-Key"], str(attempt.reference))
+        with patch("requests.get", return_value=Mock(status_code=200, json=lambda: payment("succeeded"))):
+            response = self.client.post(reverse("yoo_status", args=[order.access_token]))
+            self.assertEqual(response.json()["state"], "paid")
+            self.assertEqual(self.client.post(reverse("yoo_webhook"), json.dumps({"object": {"id": "provider-1"}}), content_type="application/json").status_code, 200)
+        order.refresh_from_db()
+        self.assertEqual(order.status, "paid")
+        self.assertEqual(PaymentEvent.objects.filter(event_id="yoo:provider-1:succeeded").count(), 1)
+
+    @override_settings(YOOKASSA_SHOP_ID="test-shop", YOOKASSA_SECRET_KEY="test-secret")
+    def test_yookassa_rejects_wrong_amount_and_live_store(self):
+        self.checkout(payment_gateway="yookassa")
+        order = Order.objects.get()
+        attempt = order.attempts.get()
+        live = {"id": "provider-1", "test": False, "amount": {"value": "1500.00", "currency": "RUB"}, "confirmation": {"confirmation_token": "ct-test"}}
+        with patch("requests.post", return_value=Mock(status_code=200, json=lambda: live)):
+            self.assertEqual(self.client.get(reverse("yoo_pay", args=[order.access_token])).status_code, 503)
+        attempt.provider_id = "provider-1"
+        attempt.save()
+        fake = {"id": "provider-1", "test": True, "amount": {"value": "1.00", "currency": "RUB"}, "metadata": {"order_id": str(order.pk), "attempt": str(attempt.reference)}, "status": "succeeded"}
+        with patch("requests.get", return_value=Mock(status_code=200, json=lambda: fake)):
+            self.assertEqual(self.client.post(reverse("yoo_status", args=[order.access_token])).status_code, 503)
+        order.refresh_from_db()
+        self.assertEqual(order.payment_state, "pending")

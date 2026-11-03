@@ -90,6 +90,9 @@ class Product(models.Model):
     availability = models.CharField("Наличие", max_length=12, choices=Availability.choices, default=Availability.IN_STOCK)
     is_visible = models.BooleanField("Показывать покупателям", default=True)
     is_featured = models.BooleanField("В подборке", default=False)
+    delivery_min_days = models.PositiveSmallIntegerField("Доставка от, дней", default=2, blank=True)
+    delivery_max_days = models.PositiveSmallIntegerField("Доставка до, дней", default=5, blank=True)
+    accessories = models.ManyToManyField("self", blank=True, symmetrical=False, related_name="paired_with", verbose_name="Покупают вместе")
     created_at = models.DateTimeField("Добавлен", auto_now_add=True)
 
     class Meta:
@@ -166,6 +169,7 @@ class Order(models.Model):
     address = models.TextField("Адрес", blank=True)
     comment = models.TextField("Комментарий", blank=True)
     payment_method = models.CharField("Способ оплаты", max_length=12, choices=Payment.choices)
+    payment_gateway = models.CharField("Платёжный шлюз", max_length=12, choices=[("demo", "Демооплата"), ("yookassa", "ЮKassa"), ("receipt", "При получении")], default="demo")
     total = models.DecimalField("Итог, ₽", max_digits=11, decimal_places=2)
     status = models.CharField("Статус", max_length=12, choices=Status.choices, default=Status.NEW)
     payment_state = models.CharField("Состояние оплаты", max_length=12, choices=[("pending", "Ожидается"), ("paid", "Успешно"), ("declined", "Отказ"), ("receipt", "При получении")], default="pending")
@@ -204,6 +208,7 @@ class Wish(models.Model):
     name = models.CharField("Имя", max_length=100)
     contact = models.CharField("Телефон или Telegram", max_length=120)
     telegram_id = models.BigIntegerField("Telegram ID", null=True, blank=True)
+    browser_session = models.CharField("Сессия браузера", max_length=40, blank=True, db_index=True)
     created_at = models.DateTimeField("Создана", auto_now_add=True)
 
     class Meta:
@@ -215,6 +220,9 @@ class PaymentAttempt(models.Model):
     reference = models.UUIDField("Номер попытки", default=uuid.uuid4, unique=True, editable=False)
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="attempts")
     state = models.CharField("Состояние", max_length=12, choices=[("pending", "Ожидается"), ("paid", "Успешно"), ("declined", "Отказ")], default="pending")
+    gateway = models.CharField("Шлюз", max_length=12, default="demo")
+    provider_id = models.CharField("ID платежа ЮKassa", max_length=80, blank=True, db_index=True)
+    confirmation_token = models.CharField("Токен виджета", max_length=255, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
 
@@ -239,3 +247,75 @@ class Notification(models.Model):
         ordering = ["-created_at"]
         verbose_name = "Уведомление"
         verbose_name_plural = "Уведомления"
+
+
+class Favorite(models.Model):
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="favorites")
+    telegram_id = models.BigIntegerField(null=True, blank=True, db_index=True)
+    browser_session = models.CharField(max_length=40, blank=True, null=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["product", "telegram_id"], name="unique_telegram_favorite"),
+            models.UniqueConstraint(fields=["product", "browser_session"], name="unique_browser_favorite"),
+        ]
+        verbose_name = "Избранное"
+        verbose_name_plural = "Избранное"
+
+
+class ProductReview(models.Model):
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="reviews")
+    author = models.CharField("Имя", max_length=80)
+    rating = models.PositiveSmallIntegerField("Оценка", choices=[(n, str(n)) for n in range(1, 6)])
+    text = models.TextField("Отзыв", max_length=2000)
+    is_published = models.BooleanField("Опубликован", default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Отзыв"
+        verbose_name_plural = "Отзывы"
+
+
+class ProductQuestion(models.Model):
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="questions")
+    author = models.CharField("Имя", max_length=80)
+    text = models.TextField("Вопрос", max_length=1000)
+    answer = models.TextField("Ответ магазина", blank=True)
+    is_published = models.BooleanField("Опубликован", default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Вопрос о товаре"
+        verbose_name_plural = "Вопросы о товарах"
+
+
+class ReturnRequest(models.Model):
+    order_item = models.ForeignKey(OrderItem, on_delete=models.PROTECT, related_name="return_requests")
+    quantity = models.PositiveSmallIntegerField("Количество", default=1)
+    reason = models.CharField("Причина", max_length=40, choices=[("defect", "Неисправность"), ("wrong", "Не тот товар"), ("other", "Другая причина")])
+    comment = models.TextField("Комментарий", max_length=1000)
+    status = models.CharField("Статус", max_length=20, choices=[("new", "Новая"), ("review", "На рассмотрении"), ("approved", "Одобрена"), ("rejected", "Отклонена"), ("closed", "Закрыта")], default="new")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Заявка на возврат"
+        verbose_name_plural = "Заявки на возврат"
+
+
+class ProductCollection(models.Model):
+    title = models.CharField("Название подборки", max_length=100)
+    description = models.CharField("Описание", max_length=240, blank=True)
+    products = models.ManyToManyField(Product, related_name="collections", verbose_name="Товары")
+    is_visible = models.BooleanField("Показывать", default=True)
+    order = models.PositiveSmallIntegerField("Порядок", default=0)
+
+    class Meta:
+        ordering = ["order", "id"]
+        verbose_name = "Подборка товаров"
+        verbose_name_plural = "Подборки товаров"
+
+    def __str__(self):
+        return self.title

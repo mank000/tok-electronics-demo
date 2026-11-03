@@ -2,7 +2,8 @@ import json
 import re
 import uuid
 from django import forms
-from .models import Order
+from django.conf import settings
+from .models import Order, ProductQuestion, ProductReview, ReturnRequest
 
 
 class CheckoutForm(forms.Form):
@@ -12,6 +13,7 @@ class CheckoutForm(forms.Form):
     address = forms.CharField(required=False, widget=forms.Textarea(attrs={"rows": 2}), label="Адрес")
     comment = forms.CharField(required=False, max_length=1000, widget=forms.Textarea(attrs={"rows": 2}), label="Комментарий")
     payment_method = forms.ChoiceField(choices=Order.Payment.choices, label="Оплата")
+    payment_gateway = forms.ChoiceField(choices=[("demo", "Демооплата"), ("yookassa", "ЮKassa (тестовый магазин)")], label="Платёжный шлюз", required=False)
     consent = forms.BooleanField(label="Согласие на обработку данных и условия оферты")
     cart = forms.CharField(widget=forms.HiddenInput)
     checkout_key = forms.UUIDField(widget=forms.HiddenInput)
@@ -30,13 +32,41 @@ class CheckoutForm(forms.Form):
 
     def clean(self):
         data = super().clean()
+        data["payment_gateway"] = data.get("payment_gateway") or "demo"
         if data.get("delivery") != Order.Delivery.PICKUP and not data.get("address", "").strip():
             self.add_error("address", "Укажите адрес доставки")
         if data.get("delivery") == Order.Delivery.REGION and data.get("payment_method") == Order.Payment.ON_RECEIPT:
             self.add_error("payment_method", "Для отправки в регионы доступна только онлайн-оплата")
+        if data.get("payment_method") == Order.Payment.ONLINE:
+            if data.get("payment_gateway") == "demo" and not settings.DEMO_PAYMENTS:
+                self.add_error("payment_gateway", "Демооплата выключена")
+            if data.get("payment_gateway") == "yookassa":
+                if not settings.YOOKASSA_SHOP_ID or not settings.YOOKASSA_SECRET_KEY:
+                    self.add_error("payment_gateway", "ЮKassa ещё не настроена")
         return data
 
 
 class WishForm(forms.Form):
     name = forms.CharField(max_length=100, label="Имя")
     contact = forms.CharField(max_length=120, label="Телефон или Telegram")
+
+
+class ReviewForm(forms.ModelForm):
+    class Meta:
+        model = ProductReview
+        fields = ("author", "rating", "text")
+        widgets = {"text": forms.Textarea(attrs={"rows": 4})}
+
+
+class QuestionForm(forms.ModelForm):
+    class Meta:
+        model = ProductQuestion
+        fields = ("author", "text")
+        widgets = {"text": forms.Textarea(attrs={"rows": 3})}
+
+
+class ReturnForm(forms.ModelForm):
+    class Meta:
+        model = ReturnRequest
+        fields = ("quantity", "reason", "comment")
+        widgets = {"comment": forms.Textarea(attrs={"rows": 3})}
