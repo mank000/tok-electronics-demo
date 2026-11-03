@@ -50,6 +50,13 @@ def queue_order_changed(order, old_status, old_track):
         queue_buyer(order, f"Заказ №{order.pk}: трек-номер {order.track_number}.")
 
 
+def retry_buyer_notifications(telegram_id):
+    """A buyer who has started the bot can receive previously missed messages."""
+    Notification.objects.filter(kind="buyer", telegram_id=telegram_id, status="failed").update(
+        status="pending", attempts=0, last_error=""
+    )
+
+
 class PaymentError(ValueError):
     pass
 
@@ -95,6 +102,10 @@ def process_payment_event(raw, signature):
     return True
 
 
+class MissingChatError(RuntimeError):
+    pass
+
+
 def send_notification(notification):
     """One queued notification; a failed send never changes the original order."""
     import requests
@@ -106,7 +117,7 @@ def send_notification(notification):
         user = BotUser.objects.filter(telegram_id=notification.telegram_id).first()
         chat_id = user.chat_id if user else None
     if not chat_id:
-        raise RuntimeError("Нет разрешённого чата для отправки")
+        raise MissingChatError("Нет разрешённого чата для отправки")
     response = requests.post(f"https://api.telegram.org/bot{settings.BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": notification.text}, timeout=12)
     if response.status_code != 200:
         raise RuntimeError(f"Telegram HTTP {response.status_code}")
@@ -120,11 +131,14 @@ def send_notification(notification):
 
 
 def flush_notifications(limit=20):
-    for notification in Notification.objects.filter(status="pending").order_by("created_at")[:limit]:
+    pending = Notification.objects.filter(status="pending")
+    if not settings.SHOP_CHAT_ID:
+        pending = pending.exclude(kind="shop")
+    for notification in pending.order_by("created_at")[:limit]:
         try:
             send_notification(notification)
         except Exception as exc:
-            notification.status = "failed"
             notification.attempts += 1
+            notification.status = "failed" if isinstance(exc, MissingChatError) or notification.attempts >= 3 else "pending"
             notification.last_error = str(exc).replace(settings.BOT_TOKEN, "[redacted]")[:500] if settings.BOT_TOKEN else str(exc)[:500]
             notification.save(update_fields=["status", "attempts", "last_error"])

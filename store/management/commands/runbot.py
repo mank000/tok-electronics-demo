@@ -3,7 +3,7 @@ import requests
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from store.models import BotUser
-from store.services import flush_notifications
+from store.services import flush_notifications, retry_buyer_notifications
 
 
 class Command(BaseCommand):
@@ -41,6 +41,7 @@ class Command(BaseCommand):
                         if not user_id:
                             continue
                         BotUser.objects.update_or_create(telegram_id=user_id, defaults={"chat_id": chat["id"]})
+                        retry_buyer_notifications(user_id)
                         if settings.BOT_USERNAME and settings.BOT_APP_SHORT_NAME:
                             url = f"https://t.me/{settings.BOT_USERNAME}/{settings.BOT_APP_SHORT_NAME}"
                         else:

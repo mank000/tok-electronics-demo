@@ -75,7 +75,7 @@ class WishAdmin(ResponsiveAdmin):
 
 @admin.action(description="Повторить отправку выбранных уведомлений")
 def retry_notifications(modeladmin, request, queryset):
-    queryset.exclude(status="sent").update(status="pending", last_error="")
+    queryset.exclude(status="sent").update(status="pending", attempts=0, last_error="")
 
 
 @admin.register(Notification)

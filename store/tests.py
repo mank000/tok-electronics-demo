@@ -13,7 +13,7 @@ from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from .models import BotUser, Category, Notification, Order, PaymentAttempt, PaymentEvent, Product, ProductImage
 from .security import TelegramAuthError, verify_init_data
-from .services import flush_notifications, process_payment_event, queue_order_changed, signed_event
+from .services import flush_notifications, process_payment_event, queue_order_changed, queue_shop, retry_buyer_notifications, signed_event
 
 
 TOKEN = "test-bot-token"
@@ -63,6 +63,12 @@ class ShopTests(TestCase):
     def test_checkout_invalid_telegram_denied(self):
         response = self.checkout(tg_init_data=telegram_data().replace("123", "999"))
         self.assertEqual(response.status_code, 403)
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_malformed_telegram_data_is_denied_without_server_error(self):
+        with self.assertRaises(TelegramAuthError):
+            verify_init_data("broken")
+        self.assertEqual(self.checkout(tg_init_data="broken").status_code, 403)
         self.assertEqual(Order.objects.count(), 0)
 
     def test_checkout_repeat_is_idempotent_for_same_session(self):
@@ -130,13 +136,55 @@ class ShopTests(TestCase):
         self.assertEqual(notification.status, "failed")
         self.assertTrue(Order.objects.filter(pk=order.pk).exists())
         BotUser.objects.create(telegram_id=123, chat_id=123)
-        notification.status = "pending"
-        notification.save(update_fields=["status"])
+        retry_buyer_notifications(123)
         with patch("requests.post", return_value=Mock(status_code=200, json=lambda: {"ok": True})) as send:
             flush_notifications()
         notification.refresh_from_db()
         self.assertEqual(notification.status, "sent")
         self.assertEqual(send.call_args.kwargs["json"]["chat_id"], 123)
+
+    @override_settings(SHOP_CHAT_ID="-100123")
+    def test_transient_shop_notification_retries_before_failing(self):
+        queue_shop("Проверка доставки")
+        notification = Notification.objects.get(kind="shop")
+        with patch("requests.post", return_value=Mock(status_code=503)):
+            flush_notifications()
+            notification.refresh_from_db()
+            self.assertEqual((notification.status, notification.attempts), ("pending", 1))
+            flush_notifications()
+            notification.refresh_from_db()
+            self.assertEqual((notification.status, notification.attempts), ("pending", 2))
+        with patch("requests.post", return_value=Mock(status_code=200, json=lambda: {"ok": True})):
+            flush_notifications()
+        notification.refresh_from_db()
+        self.assertEqual((notification.status, notification.attempts), ("sent", 3))
+
+    @override_settings(SHOP_CHAT_ID="")
+    def test_shop_notification_waits_for_chat_configuration(self):
+        queue_shop("Проверка доставки")
+        with patch("requests.post") as send:
+            flush_notifications()
+        notification = Notification.objects.get(kind="shop")
+        self.assertEqual(notification.status, "pending")
+        send.assert_not_called()
+        with override_settings(SHOP_CHAT_ID="-100123"), patch("requests.post", return_value=Mock(status_code=200, json=lambda: {"ok": True})):
+            flush_notifications()
+        notification.refresh_from_db()
+        self.assertEqual(notification.status, "sent")
+
+    @override_settings(BOT_USERNAME="test_bot", BOT_APP_SHORT_NAME="shop", SHOP_CHAT_ID="-100123")
+    def test_start_command_delivers_previous_buyer_notifications(self):
+        notification = Notification.objects.create(kind="buyer", telegram_id=123, text="Статус заказа")
+        flush_notifications()
+        notification.refresh_from_db()
+        self.assertEqual(notification.status, "failed")
+        updates = {"ok": True, "result": [{"update_id": 1, "message": {"text": "/start", "from": {"id": 123}, "chat": {"id": 123, "type": "private"}}}]}
+        with patch("requests.get", side_effect=[Mock(json=lambda: updates), KeyboardInterrupt]), patch("requests.post", return_value=Mock(status_code=200, json=lambda: {"ok": True})) as send:
+            call_command("runbot")
+        notification.refresh_from_db()
+        self.assertEqual(notification.status, "sent")
+        self.assertTrue(BotUser.objects.filter(telegram_id=123, chat_id=123).exists())
+        self.assertTrue(any(call.kwargs.get("json", {}).get("text") == "Статус заказа" for call in send.call_args_list))
 
     def test_hidden_product_not_visible_or_orderable(self):
         self.product.is_visible = False
