@@ -1,17 +1,40 @@
 from django.contrib import admin
 from django.db.models import Count
-from .models import BotUser, Category, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductImage, Wish
+from django.utils.html import format_html
+from .models import BotUser, Category, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductImage, ShopSettings, Wish
 from .services import queue_order_changed
 
 
-admin.site.site_header = "ток. · Управление магазином"
-admin.site.site_title = "ток."
+admin.site.site_header = "Управление магазином"
+admin.site.site_title = "Магазин"
 admin.site.index_title = "Магазин электроники"
 
 
 class ResponsiveAdmin(admin.ModelAdmin):
     class Media:
         css = {"all": ("store/admin.css",)}
+
+
+@admin.register(ShopSettings)
+class ShopSettingsAdmin(ResponsiveAdmin):
+    fieldsets = (
+        ("Витрина", {"fields": ("name", "subtitle", "logo", "logo_preview")}),
+        ("Контакты", {"fields": ("contact_phone", "contact_email", "pickup_address")}),
+        ("Реквизиты", {"fields": ("legal_name", "inn", "ogrn", "legal_address")}),
+    )
+    readonly_fields = ("logo_preview",)
+
+    @admin.display(description="Текущий логотип")
+    def logo_preview(self, obj):
+        if obj and obj.logo:
+            return format_html('<img src="{}" alt="" style="max-width:160px;max-height:100px;object-fit:contain">', obj.logo.url)
+        return "Логотип не загружен"
+
+    def has_add_permission(self, request):
+        return super().has_add_permission(request) and not ShopSettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(Category)
@@ -21,9 +44,17 @@ class CategoryAdmin(ResponsiveAdmin):
     prepopulated_fields = {"slug": ("name",)}
 
 
-class ProductImageInline(admin.TabularInline):
+class ProductImageInline(admin.StackedInline):
     model = ProductImage
     extra = 1
+    fields = ("preview", "image", "alt", "order")
+    readonly_fields = ("preview",)
+
+    @admin.display(description="Текущее фото")
+    def preview(self, obj):
+        if obj and obj.pk and obj.image:
+            return format_html('<img src="{}" alt="" style="width:120px;height:120px;object-fit:contain">', (obj.thumb or obj.image).url)
+        return "Фото не загружено"
 
 
 @admin.register(Product)
@@ -75,7 +106,7 @@ class WishAdmin(ResponsiveAdmin):
 
 @admin.action(description="Повторить отправку выбранных уведомлений")
 def retry_notifications(modeladmin, request, queryset):
-    queryset.exclude(status="sent").update(status="pending", last_error="")
+    queryset.exclude(status="sent").update(status="pending", attempts=0, last_error="")
 
 
 @admin.register(Notification)

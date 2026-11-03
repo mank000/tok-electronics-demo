@@ -13,7 +13,10 @@ class TelegramAuthError(ValueError):
 def verify_init_data(raw, now=None):
     if not raw or not settings.BOT_TOKEN or len(raw) > 8192:
         raise TelegramAuthError("Данные Telegram недоступны")
-    pairs = parse_qsl(raw, keep_blank_values=True, strict_parsing=True)
+    try:
+        pairs = parse_qsl(raw, keep_blank_values=True, strict_parsing=True)
+    except ValueError as exc:
+        raise TelegramAuthError("Некорректные данные Telegram") from exc
     data = dict(pairs)
     if len(pairs) != len(data) or "hash" not in data or "auth_date" not in data or "user" not in data:
         raise TelegramAuthError("Неполные данные Telegram")
