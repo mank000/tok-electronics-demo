@@ -6,7 +6,7 @@ import re
 import tempfile
 import time
 import uuid
-from datetime import timedelta
+from datetime import datetime, time as datetime_time, timedelta
 from decimal import Decimal
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -20,7 +20,8 @@ from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from .integrations import encrypt_secret, get_runtime_config
-from .models import BotUser, BrowserLoginCode, Category, CustomerProfile, Favorite, IntegrationSettings, Notification, Order, PaymentAttempt, PaymentEvent, Product, ProductImage, ProductQuestion, ProductReview, RecentlyViewed, ReturnRequest, ShopSettings
+from .analytics import dashboard_data, month_at
+from .models import BotUser, BrowserLoginCode, Category, CustomerProfile, Favorite, IntegrationSettings, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductImage, ProductQuestion, ProductReview, RecentlyViewed, ReturnRequest, ShopSettings, Wish
 from .phone_login import normalize_phone
 from .security import TelegramAuthError, verify_init_data
 from .services import flush_notifications, process_payment_event, queue_buyer, queue_order_changed, queue_shop, retry_buyer_notifications, signed_event
@@ -696,3 +697,71 @@ class CommerceFeaturesTests(TestCase):
             self.assertEqual(self.client.post(reverse("yoo_status", args=[order.access_token])).status_code, 503)
         order.refresh_from_db()
         self.assertEqual(order.payment_state, "pending")
+
+
+class AnalyticsTests(TestCase):
+    def setUp(self):
+        category = Category.objects.create(name="Техника", slug="analytics-tech")
+        self.phone = Product.objects.create(category=category, name="Телефон", slug="analytics-phone", description="Тест", price=Decimal("500.00"))
+        self.laptop = Product.objects.create(category=category, name="Ноутбук", slug="analytics-laptop", description="Тест", price=Decimal("2000.00"))
+
+    def make_order(self, product, *, total, quantity=1, status="new", payment_state="pending", is_demo=False):
+        order = Order.objects.create(name="Тест", phone="+7 900 000-00-00", telegram_id=111 if not is_demo else -111,
+            is_demo=is_demo, delivery=Order.Delivery.PICKUP, payment_method=Order.Payment.ONLINE,
+            payment_gateway="demo", total=Decimal(total), status=status, payment_state=payment_state)
+        item = OrderItem.objects.create(order=order, product=product, title=product.name, quantity=quantity,
+            unit_price=Decimal(total) / quantity)
+        return order, item
+
+    def test_dashboard_excludes_demo_and_separates_orders_from_paid_amount(self):
+        paid, paid_item = self.make_order(self.phone, total="1000.00", quantity=2, status="delivered", payment_state="paid")
+        self.make_order(self.phone, total="3000.00", quantity=3, status="cancelled", payment_state="paid")
+        self.make_order(self.laptop, total="2000.00")
+        previous, _ = self.make_order(self.laptop, total="500.00", status="delivered", payment_state="paid")
+        self.make_order(self.phone, total="999999.00", status="delivered", payment_state="paid", is_demo=True)
+        first = timezone.localdate().replace(day=1)
+        previous_date = month_at(first, -1)
+        previous_time = timezone.make_aware(datetime.combine(previous_date, datetime_time(hour=12)), timezone.get_current_timezone())
+        Order.objects.filter(pk=previous.pk).update(created_at=previous_time)
+        Wish.objects.create(product=self.laptop, name="Тест", contact="Telegram ID 111", telegram_id=111)
+        Favorite.objects.create(product=self.phone, telegram_id=111)
+        Favorite.objects.create(product=self.laptop, browser_session="analytics-browser")
+        ReturnRequest.objects.create(order_item=paid_item, quantity=1, reason="defect")
+
+        data = dashboard_data(12)
+        self.assertEqual(data["total_orders"], 4)
+        self.assertEqual(data["placed_total"], "3\u00a0500 ₽")
+        self.assertEqual(data["paid_total"], "1\u00a0500 ₽")
+        self.assertEqual(data["average_paid"], "750 ₽")
+        self.assertEqual(data["paid_count"], 2)
+        self.assertEqual(data["monthly"][-1]["count"], 3)
+        self.assertEqual(data["monthly"][-2]["count"], 1)
+        self.assertEqual(data["pending_returns"], 1)
+        self.assertEqual(data["favorites"], 2)
+        self.assertEqual(data["top_wishes"][0]["product__name"], "Ноутбук")
+        quantities = {row["product__name"]: row["units"] for row in data["top_products"]}
+        self.assertEqual(quantities, {"Ноутбук": 2, "Телефон": 2})
+        self.assertEqual(dashboard_data(24)["selected_months"], 24)
+        self.assertEqual(dashboard_data(7)["selected_months"], 12)
+
+    def test_admin_analytics_is_read_only_and_requires_order_view_permission(self):
+        url = reverse("admin:store_shopanalytics_changelist")
+        self.assertEqual(self.client.get(url).status_code, 302)
+        admin_user = get_user_model().objects.create_superuser("analytics_admin", "admin@example.test", "test-password")
+        self.client.force_login(admin_user)
+        response = self.client.get(url, {"months": "6"})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Чаще всего заказывают")
+        self.assertContains(response, "Оплаты по месяцам")
+        self.assertEqual(response.context["selected_months"], 6)
+        self.assertContains(self.client.get(reverse("admin:index")), "Аналитика магазина")
+        self.assertEqual(self.client.get(reverse("admin:store_shopanalytics_add")).status_code, 403)
+
+        staff = get_user_model().objects.create_user("order_viewer", password="test-password", is_staff=True)
+        staff.user_permissions.add(Permission.objects.get(codename="view_order", content_type__app_label="store", content_type__model="order"))
+        self.client.force_login(staff)
+        self.assertEqual(self.client.get(url).status_code, 200)
+        other_staff = get_user_model().objects.create_user("product_viewer", password="test-password", is_staff=True)
+        other_staff.user_permissions.add(Permission.objects.get(codename="view_product", content_type__app_label="store", content_type__model="product"))
+        self.client.force_login(other_staff)
+        self.assertEqual(self.client.get(url).status_code, 403)

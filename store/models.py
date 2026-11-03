@@ -213,6 +213,13 @@ class Order(models.Model):
         return f"Заказ №{self.pk}"
 
 
+class ShopAnalytics(Order):
+    class Meta:
+        proxy = True
+        verbose_name = "Аналитика магазина"
+        verbose_name_plural = "Аналитика магазина"
+
+
 class OrderItem(models.Model):
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="items")
     product = models.ForeignKey(Product, on_delete=models.PROTECT)
