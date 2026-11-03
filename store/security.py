@@ -3,7 +3,7 @@ import hmac
 import json
 import time
 from urllib.parse import parse_qsl
-from django.conf import settings
+from .integrations import get_runtime_config
 
 
 class TelegramAuthError(ValueError):
@@ -11,7 +11,8 @@ class TelegramAuthError(ValueError):
 
 
 def verify_init_data(raw, now=None):
-    if not raw or not settings.BOT_TOKEN or len(raw) > 8192:
+    bot_token = get_runtime_config().bot_token
+    if not raw or not bot_token or len(raw) > 8192:
         raise TelegramAuthError("Данные Telegram недоступны")
     try:
         pairs = parse_qsl(raw, keep_blank_values=True, strict_parsing=True)
@@ -31,7 +32,7 @@ def verify_init_data(raw, now=None):
     if user_id <= 0 or len(supplied_hash) != 32 or stamp > current + 60 or current - stamp > 86400:
         raise TelegramAuthError("Срок данных Telegram истёк")
     check = "\n".join(f"{k}={v}" for k, v in sorted(data.items()) if k != "hash")
-    key = hmac.new(b"WebAppData", settings.BOT_TOKEN.encode(), hashlib.sha256).digest()
+    key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
     expected = hmac.new(key, check.encode(), hashlib.sha256).digest()
     if not hmac.compare_digest(supplied_hash, expected):
         raise TelegramAuthError("Подпись Telegram не совпадает")

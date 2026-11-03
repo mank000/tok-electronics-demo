@@ -39,6 +39,27 @@ class ShopSettings(models.Model):
         super().save(*args, **kwargs)
 
 
+class IntegrationSettings(models.Model):
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    bot_token_ciphertext = models.TextField(blank=True, editable=False)
+    payment_secret_ciphertext = models.TextField(blank=True, editable=False)
+    bot_username = models.CharField("Username бота", max_length=32, blank=True, help_text="Без @")
+    bot_app_short_name = models.CharField("Короткое имя Mini App", max_length=64, blank=True)
+    public_base_url = models.URLField("Публичный HTTPS-адрес", blank=True)
+    shop_chat_id = models.CharField("ID чата магазина", max_length=32, blank=True)
+
+    class Meta:
+        verbose_name = "Подключение Telegram и оплаты"
+        verbose_name_plural = "Подключение Telegram и оплаты"
+
+    def __str__(self):
+        return "Подключение Telegram и оплаты"
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+
 class Category(models.Model):
     name = models.CharField("Название", max_length=80)
     slug = models.SlugField("Адрес", unique=True)

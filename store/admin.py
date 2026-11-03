@@ -1,7 +1,14 @@
+import re
+
+from django import forms
 from django.contrib import admin
+from django.conf import settings
 from django.db.models import Count
+from django.utils.decorators import method_decorator
 from django.utils.html import format_html
-from .models import BotUser, Category, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductImage, ShopSettings, Wish
+from django.views.decorators.debug import sensitive_post_parameters
+from .integrations import encrypt_secret
+from .models import BotUser, Category, IntegrationSettings, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductImage, ShopSettings, Wish
 from .services import queue_order_changed
 
 
@@ -32,6 +39,122 @@ class ShopSettingsAdmin(ResponsiveAdmin):
 
     def has_add_permission(self, request):
         return super().has_add_permission(request) and not ShopSettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+class IntegrationSettingsForm(forms.ModelForm):
+    bot_token = forms.CharField(
+        label="Токен бота",
+        required=False,
+        widget=forms.PasswordInput(render_value=False),
+        help_text="Пустое поле сохраняет текущий токен; значение не показывается повторно.",
+    )
+    clear_bot_token = forms.BooleanField(label="Удалить значение из админки (вернуться к .env)", required=False)
+    payment_webhook_secret = forms.CharField(
+        label="Секрет учебной оплаты",
+        required=False,
+        widget=forms.PasswordInput(render_value=False),
+        help_text="Отдельный случайный секрет длиной не менее 32 символов. Пустое поле сохраняет текущий.",
+    )
+    clear_payment_webhook_secret = forms.BooleanField(label="Удалить значение из админки (вернуться к .env)", required=False)
+
+    class Meta:
+        model = IntegrationSettings
+        fields = ("bot_username", "bot_app_short_name", "public_base_url", "shop_chat_id")
+
+    def clean_bot_token(self):
+        value = self.cleaned_data["bot_token"].strip()
+        if any(character.isspace() for character in value):
+            raise forms.ValidationError("Токен не должен содержать пробелы.")
+        return value
+
+    def clean_bot_username(self):
+        value = self.cleaned_data["bot_username"].strip().lstrip("@")
+        if value and not re.fullmatch(r"[A-Za-z0-9_]{5,32}", value):
+            raise forms.ValidationError("Укажите username бота без @ (5–32 символа).")
+        return value
+
+    def clean_bot_app_short_name(self):
+        value = self.cleaned_data["bot_app_short_name"].strip()
+        if value and not re.fullmatch(r"[A-Za-z0-9_]{1,64}", value):
+            raise forms.ValidationError("Используйте латинские буквы, цифры и подчёркивание.")
+        return value
+
+    def clean_public_base_url(self):
+        value = self.cleaned_data["public_base_url"].strip().rstrip("/")
+        if value and not value.startswith("https://"):
+            raise forms.ValidationError("Для Mini App нужен HTTPS-адрес.")
+        return value
+
+    def clean_shop_chat_id(self):
+        value = self.cleaned_data["shop_chat_id"].strip()
+        if value and not re.fullmatch(r"-?\d{1,20}", value):
+            raise forms.ValidationError("Укажите числовой ID чата из команды /chatid.")
+        return value
+
+    def clean(self):
+        data = super().clean()
+        for value, clear in (("bot_token", "clear_bot_token"), ("payment_webhook_secret", "clear_payment_webhook_secret")):
+            if data.get(value) and data.get(clear):
+                self.add_error(clear, "Нельзя одновременно заменить и удалить значение.")
+        if data.get("payment_webhook_secret") and len(data["payment_webhook_secret"]) < 32:
+            self.add_error("payment_webhook_secret", "Нужно не менее 32 символов.")
+        return data
+
+
+@admin.register(IntegrationSettings)
+class IntegrationSettingsAdmin(ResponsiveAdmin):
+    form = IntegrationSettingsForm
+    fieldsets = (
+        ("Бот и Mini App", {"fields": ("bot_token_status", "bot_token", "clear_bot_token", "bot_username", "bot_app_short_name", "public_base_url", "shop_chat_id")}),
+        ("Учебная оплата", {"fields": ("payment_secret_status", "payment_webhook_secret", "clear_payment_webhook_secret")}),
+    )
+    readonly_fields = ("bot_token_status", "payment_secret_status")
+
+    @method_decorator(sensitive_post_parameters("bot_token", "payment_webhook_secret"))
+    def add_view(self, request, form_url="", extra_context=None):
+        return super().add_view(request, form_url, extra_context)
+
+    @method_decorator(sensitive_post_parameters("bot_token", "payment_webhook_secret"))
+    def change_view(self, request, object_id, form_url="", extra_context=None):
+        return super().change_view(request, object_id, form_url, extra_context)
+
+    @admin.display(description="Токен бота")
+    def bot_token_status(self, obj):
+        if obj and obj.bot_token_ciphertext:
+            return "Сохранён в админке"
+        return "Задан в .env" if settings.BOT_TOKEN else "Не задан"
+
+    @admin.display(description="Секрет оплаты")
+    def payment_secret_status(self, obj):
+        if obj and obj.payment_secret_ciphertext:
+            return "Сохранён в админке"
+        return "Задан в .env" if settings.PAYMENT_WEBHOOK_SECRET else "Не задан"
+
+    def save_model(self, request, obj, form, change):
+        for value, clear, field in (
+            ("bot_token", "clear_bot_token", "bot_token_ciphertext"),
+            ("payment_webhook_secret", "clear_payment_webhook_secret", "payment_secret_ciphertext"),
+        ):
+            if form.cleaned_data[clear]:
+                setattr(obj, field, "")
+            elif form.cleaned_data[value]:
+                setattr(obj, field, encrypt_secret(form.cleaned_data[value]))
+        super().save_model(request, obj, form, change)
+
+    def has_module_permission(self, request):
+        return request.user.is_superuser
+
+    def has_view_permission(self, request, obj=None):
+        return request.user.is_superuser
+
+    def has_add_permission(self, request):
+        return request.user.is_superuser and not IntegrationSettings.objects.exists()
+
+    def has_change_permission(self, request, obj=None):
+        return request.user.is_superuser
 
     def has_delete_permission(self, request, obj=None):
         return False
