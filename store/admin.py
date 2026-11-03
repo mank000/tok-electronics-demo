@@ -208,8 +208,8 @@ class OrderItemInline(admin.TabularInline):
 
 @admin.register(Order)
 class OrderAdmin(ResponsiveAdmin):
-    list_display = ("id", "created_at", "name", "phone", "total", "delivery", "payment_state", "status", "track_number")
-    list_filter = ("status", "payment_state", "delivery", "created_at")
+    list_display = ("id", "is_demo", "created_at", "name", "phone", "total", "delivery", "payment_state", "status", "track_number")
+    list_filter = ("is_demo", "status", "payment_state", "delivery", "created_at")
     search_fields = ("=id", "name", "phone", "track_number")
     readonly_fields = ("access_token", "checkout_key", "telegram_id", "name", "phone", "delivery", "address", "comment", "payment_method", "payment_gateway", "total", "payment_state", "created_at", "updated_at")
     inlines = (OrderItemInline,)
@@ -275,17 +275,17 @@ class PaymentEventAdmin(ResponsiveAdmin):
 
 @admin.register(ProductReview)
 class ProductReviewAdmin(ResponsiveAdmin):
-    list_display = ("product", "author", "rating", "order_item", "is_published", "created_at")
-    list_filter = ("is_published", "rating")
+    list_display = ("product", "author", "rating", "is_demo", "order_item", "is_published", "created_at")
+    list_filter = ("is_demo", "is_published", "rating")
     search_fields = ("product__name", "author", "text")
-    readonly_fields = ("product", "author", "telegram_id", "order_item", "rating", "text", "created_at")
+    readonly_fields = ("product", "author", "telegram_id", "is_demo", "order_item", "rating", "text", "created_at")
     actions = ("publish_reviews", "hide_reviews")
 
     @admin.action(description="Опубликовать проверенные отзывы")
     def publish_reviews(self, request, queryset):
         queryset.filter(telegram_id__isnull=False, order_item__order__status=Order.Status.DELIVERED,
             order_item__order__payment_state__in=("paid", "receipt"),
-            order_item__order__telegram_id=F("telegram_id"), order_item__product_id=F("product_id")).update(is_published=True)
+            order_item__order__telegram_id=F("telegram_id"), order_item__order__is_demo=F("is_demo"), order_item__product_id=F("product_id")).update(is_published=True)
 
     @admin.action(description="Скрыть выбранные отзывы")
     def hide_reviews(self, request, queryset):
@@ -294,8 +294,8 @@ class ProductReviewAdmin(ResponsiveAdmin):
 
 @admin.register(ProductQuestion)
 class ProductQuestionAdmin(ResponsiveAdmin):
-    list_display = ("product", "author", "is_published", "created_at")
-    list_filter = ("is_published",)
+    list_display = ("product", "author", "is_demo", "is_published", "created_at")
+    list_filter = ("is_demo", "is_published")
     list_editable = ("is_published",)
     search_fields = ("product__name", "author", "text")
 
