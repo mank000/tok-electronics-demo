@@ -39,6 +39,23 @@ def verify_init_data(raw, now=None):
     return user_id
 
 
+def verified_init_profile(raw):
+    user_id = verify_init_data(raw)
+    user = json.loads(dict(parse_qsl(raw, keep_blank_values=True))["user"])
+    name = " ".join(str(user.get(field, "")).strip() for field in ("first_name", "last_name")).strip()[:80]
+    return {"id": user_id, "name": name or "Покупатель Telegram"}
+
+
+def current_profile(request):
+    raw = request.headers.get("X-Telegram-Init-Data") or request.POST.get("tg_init_data", "")
+    if raw:
+        return verified_init_profile(raw)
+    telegram_id = request.session.get("telegram_id")
+    if telegram_id:
+        return {"id": int(telegram_id), "name": request.session.get("telegram_name", "Покупатель Telegram")}
+    return None
+
+
 def telegram_id_from_request(request):
     raw = request.headers.get("X-Telegram-Init-Data") or request.POST.get("tg_init_data", "")
     if not raw:

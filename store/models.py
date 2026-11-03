@@ -1,6 +1,7 @@
 import secrets
 import uuid
 from decimal import Decimal
+from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from django.db import models
 from django.utils import timezone
@@ -267,6 +268,8 @@ class Favorite(models.Model):
 class ProductReview(models.Model):
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="reviews")
     author = models.CharField("Имя", max_length=80)
+    telegram_id = models.BigIntegerField("Telegram ID", null=True, blank=True, db_index=True)
+    order_item = models.ForeignKey(OrderItem, on_delete=models.PROTECT, null=True, blank=True, related_name="reviews", verbose_name="Подтверждённая покупка")
     rating = models.PositiveSmallIntegerField("Оценка", choices=[(n, str(n)) for n in range(1, 6)])
     text = models.TextField("Отзыв", max_length=2000)
     is_published = models.BooleanField("Опубликован", default=False)
@@ -274,13 +277,23 @@ class ProductReview(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        constraints = [models.UniqueConstraint(fields=["product", "telegram_id"], name="one_review_per_telegram_buyer")]
         verbose_name = "Отзыв"
         verbose_name_plural = "Отзывы"
+
+    def clean(self):
+        if self.is_published and (not self.telegram_id or not self.order_item_id
+                or self.order_item.product_id != self.product_id
+                or self.order_item.order.telegram_id != self.telegram_id
+                or self.order_item.order.status != Order.Status.DELIVERED
+                or self.order_item.order.payment_state not in ("paid", "receipt")):
+            raise ValidationError("Опубликовать можно только отзыв о доставленной покупке этого пользователя")
 
 
 class ProductQuestion(models.Model):
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="questions")
     author = models.CharField("Имя", max_length=80)
+    telegram_id = models.BigIntegerField("Telegram ID", null=True, blank=True, db_index=True)
     text = models.TextField("Вопрос", max_length=1000)
     answer = models.TextField("Ответ магазина", blank=True)
     is_published = models.BooleanField("Опубликован", default=False)
@@ -319,3 +332,15 @@ class ProductCollection(models.Model):
 
     def __str__(self):
         return self.title
+
+
+class RecentlyViewed(models.Model):
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="recent_views")
+    telegram_id = models.BigIntegerField("Telegram ID", db_index=True)
+    viewed_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["product", "telegram_id"], name="unique_recent_telegram_product")]
+        ordering = ["-viewed_at"]
+        verbose_name = "Просмотренный товар"
+        verbose_name_plural = "Просмотренные товары"

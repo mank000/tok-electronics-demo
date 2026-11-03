@@ -65,6 +65,7 @@
   const checkoutForm=document.getElementById('checkout-form');
   if (checkoutForm) {
     const delivery=checkoutForm.elements.delivery, payment=checkoutForm.elements.payment_method;
+    if (tg?.initData || document.body.dataset.sessionAuth==='true') document.getElementById('name-field').hidden=true;
     const updateDelivery=()=>{document.getElementById('address-field').hidden=delivery.value==='pickup'; const receipt=payment.querySelector('option[value="receipt"]'); receipt.disabled=delivery.value==='region'; if(receipt.disabled && payment.value==='receipt') payment.value='online'; document.getElementById('gateway-field').hidden=payment.value!=='online';};
     delivery.addEventListener('change',updateDelivery); payment.addEventListener('change',updateDelivery); updateDelivery();
     checkoutForm.elements.cart.value=JSON.stringify(cart());
@@ -78,11 +79,18 @@
   if (favoriteButton) {
     const slug = favoriteButton.dataset.slug;
     const label = selected => { favoriteButton.setAttribute('aria-pressed', String(selected)); favoriteButton.textContent = selected ? '♥ В избранном' : '♡ В избранное'; };
-    fetch(`/api/product/${encodeURIComponent(slug)}/favorite/`, {headers: identityHeaders()}).then(r => r.ok ? r.json() : Promise.reject()).then(data => label(data.favorite)).catch(() => {});
+    fetch(`/api/product/${encodeURIComponent(slug)}/favorite/`, {headers: identityHeaders()}).then(r => r.ok ? r.json() : Promise.reject()).then(data => {
+      label(data.favorite);
+      const review=document.querySelector('.review-form'), note=document.getElementById('review-eligibility');
+      if (review && note) { review.hidden=!data.can_review; note.hidden=!!data.can_review; note.textContent=!data.authenticated?'Войдите через Telegram, чтобы узнать, доступен ли отзыв.':data.already_reviewed?'Вы уже оставили отзыв об этом товаре.': 'Отзыв можно написать после покупки и доставки товара.'; }
+      document.querySelectorAll('.auth-required').forEach(el => { if (!el.classList.contains('review-form')) el.hidden=!data.authenticated; });
+      document.querySelectorAll('.auth-login').forEach(el => { el.hidden=!!data.authenticated; });
+    }).catch(() => {});
+    fetch(`/product/${encodeURIComponent(slug)}/viewed/`, {method:'POST',headers:{'X-CSRFToken':decodeURIComponent(csrf || ''),...identityHeaders()}}).catch(() => {});
     favoriteButton.addEventListener('click', async () => {
       favoriteButton.disabled = true;
       try { const response = await fetch(`/product/${encodeURIComponent(slug)}/favorite/`, {method:'POST', headers:{'X-CSRFToken':decodeURIComponent(csrf || ''), ...identityHeaders()}}); if(!response.ok) throw Error(); label((await response.json()).favorite); }
-      catch { document.querySelector('.share-feedback').textContent='Не удалось сохранить избранное.'; }
+      catch { document.querySelector('.share-feedback').textContent='Войдите через Telegram, чтобы сохранить товар в избранном.'; }
       finally { favoriteButton.disabled = false; }
     });
   }
@@ -97,8 +105,8 @@
       catch { feedback.textContent=url; }
     }
   });
-  const accountLists = document.querySelectorAll('[data-account-list]');
-  if (accountLists.length) {
+  const accountPage=document.querySelector('.account-page');
+  if (accountPage) {
     const card = (heading, detail, url) => {
       const article=document.createElement('article'); article.className='account-card';
       const title=document.createElement('strong'); title.textContent=heading;
@@ -106,13 +114,33 @@
       const link=document.createElement('a'); link.className='text-button'; link.href=url; link.textContent='Подробнее ↗';
       article.append(title, info, link); return article;
     };
-    fetch('/api/account/', {headers:identityHeaders()}).then(async response => { if(!response.ok) throw Error('Не удалось открыть кабинет'); return response.json(); }).then(data => {
-      for (const list of accountLists) {
+    if (tg?.initData) document.querySelector('.account-logout')?.setAttribute('hidden','');
+    fetch('/api/account/', {headers:identityHeaders()}).then(async response => {
+      if(response.status===401) { document.getElementById('account-login').hidden=false; return null; }
+      if(!response.ok) throw Error('Не удалось открыть кабинет');
+      return response.json();
+    }).then(data => {
+      if (!data) return;
+      document.getElementById('account-content').hidden=false;
+      document.getElementById('account-greeting').textContent=`${data.profile.name}, рады вас видеть.`;
+      for (const list of document.querySelectorAll('[data-account-list]')) {
         const type=list.dataset.accountList; list.replaceChildren();
         if(!data[type].length) { const empty=document.createElement('p'); empty.className='empty-state'; empty.textContent=type==='current'?'Текущих заказов пока нет.':type==='purchases'?'Завершённых покупок пока нет.':type==='wishes'?'Заявок пока нет.':'Сохранённых товаров пока нет.'; list.append(empty); continue; }
         for (const item of data[type]) {
           const detail=type==='current'||type==='purchases' ? `${item.created} · ${item.status} · ${money(item.total)} · ${item.items.map(x => x.name).join(', ')}` : type==='wishes' ? `Заявка от ${item.created}` : money(item.price);
           list.append(card(item.id ? `Заказ №${item.id}` : item.name, detail, item.url));
+        }
+      }
+      const track=document.getElementById('recent-track');
+      if (track) {
+        track.replaceChildren();
+        if (!data.recent.length) { const empty=document.createElement('p'); empty.className='empty-state'; empty.textContent='Вы ещё не смотрели товары.'; track.append(empty); }
+        for (const item of data.recent) {
+          const link=document.createElement('a'); link.href=item.url; link.className='recent-card';
+          if(item.image) { const image=document.createElement('img'); image.src=item.image; image.alt=''; link.append(image); }
+          const name=document.createElement('strong'); name.textContent=item.name;
+          const price=document.createElement('span'); price.textContent=money(item.price);
+          link.append(name, price); track.append(link);
         }
       }
     }).catch(error => { const box=document.getElementById('account-error'); box.hidden=false; box.textContent=error.message; });
