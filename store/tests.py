@@ -10,11 +10,13 @@ from unittest.mock import Mock, patch
 from urllib.parse import urlencode
 from PIL import Image
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
 from django.core.management import call_command
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
-from .models import BotUser, Category, Notification, Order, PaymentAttempt, PaymentEvent, Product, ProductImage, ShopSettings
+from .integrations import encrypt_secret, get_runtime_config
+from .models import BotUser, Category, IntegrationSettings, Notification, Order, PaymentAttempt, PaymentEvent, Product, ProductImage, ShopSettings
 from .security import TelegramAuthError, verify_init_data
 from .services import flush_notifications, process_payment_event, queue_order_changed, queue_shop, retry_buyer_notifications, signed_event
 
@@ -237,6 +239,78 @@ class ShopTests(TestCase):
             self.assertContains(page, shop.logo.url)
             self.assertContains(self.client.get(reverse("document", args=["offer"])), "Заглушка для учебного проекта")
             self.assertEqual(self.client.get(reverse("admin:store_shopsettings_add")).status_code, 403)
+
+    def test_admin_integrations_keep_secrets_hidden_and_apply_without_restart(self):
+        secret = "a-separate-payment-secret-with-at-least-32-characters"
+        with override_settings(BOT_TOKEN="", BOT_USERNAME="", BOT_APP_SHORT_NAME="", SHOP_CHAT_ID="", PAYMENT_WEBHOOK_SECRET=""):
+            user = get_user_model().objects.create_superuser("admin", "admin@example.test", "test-password")
+            self.client.force_login(user)
+            data = {
+                "bot_token": TOKEN, "bot_username": "test_bot", "bot_app_short_name": "shop",
+                "public_base_url": "https://shop.example.test", "shop_chat_id": "-100123",
+                "payment_webhook_secret": secret, "_save": "Сохранить",
+            }
+            self.assertEqual(self.client.post(reverse("admin:store_integrationsettings_add"), data).status_code, 302)
+            saved = IntegrationSettings.objects.get(pk=1)
+            self.assertNotIn(TOKEN, saved.bot_token_ciphertext)
+            self.assertNotIn(secret, saved.payment_secret_ciphertext)
+            self.assertEqual(get_runtime_config().bot_token, TOKEN)
+            self.assertEqual(get_runtime_config().payment_webhook_secret, secret)
+            self.assertEqual(verify_init_data(telegram_data()), 123)
+            raw = b"payment-event"
+            self.assertEqual(signed_event(raw), hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest())
+            change_url = reverse("admin:store_integrationsettings_change", args=[1])
+            page = self.client.get(change_url)
+            self.assertNotContains(page, TOKEN)
+            self.assertNotContains(page, secret)
+            queue_shop("Проверка новых настроек")
+            with patch("requests.post", return_value=Mock(status_code=200, json=lambda: {"ok": True})) as send:
+                flush_notifications()
+            self.assertIn(TOKEN, send.call_args.args[0])
+            self.assertEqual(send.call_args.kwargs["json"]["chat_id"], "-100123")
+            data["bot_token"] = ""
+            data["payment_webhook_secret"] = ""
+            self.assertEqual(self.client.post(change_url, data).status_code, 302)
+            self.assertEqual(get_runtime_config().bot_token, TOKEN)
+            self.assertEqual(get_runtime_config().payment_webhook_secret, secret)
+            data["bot_token"] = "new-token"
+            self.assertEqual(self.client.post(change_url, data).status_code, 302)
+            self.assertEqual(get_runtime_config().bot_token, "new-token")
+            data["bot_token"] = ""
+            data["clear_bot_token"] = "on"
+            self.assertEqual(self.client.post(change_url, data).status_code, 302)
+            self.assertEqual(get_runtime_config().bot_token, "")
+
+    def test_bot_waits_for_admin_token_then_uses_it(self):
+        with override_settings(BOT_TOKEN="", BOT_USERNAME="", BOT_APP_SHORT_NAME="", PUBLIC_BASE_URL=""):
+            def configure_during_wait(_seconds):
+                IntegrationSettings.objects.create(
+                    bot_token_ciphertext=encrypt_secret(TOKEN),
+                    bot_username="test_bot", bot_app_short_name="shop",
+                )
+
+            with patch("time.sleep", side_effect=configure_during_wait) as wait, patch("requests.get", side_effect=[Mock(json=lambda: {"ok": True, "result": []}), KeyboardInterrupt]) as poll:
+                call_command("runbot")
+            wait.assert_called_once_with(5)
+            self.assertIn(TOKEN, poll.call_args_list[0].args[0])
+
+    def test_admin_integrations_rejects_http_url_and_short_payment_secret(self):
+        user = get_user_model().objects.create_superuser("admin", "admin@example.test", "test-password")
+        self.client.force_login(user)
+        response = self.client.post(reverse("admin:store_integrationsettings_add"), {
+            "bot_token": TOKEN, "public_base_url": "http://shop.example.test",
+            "payment_webhook_secret": "short", "_save": "Сохранить",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Для Mini App нужен HTTPS-адрес")
+        self.assertEqual(IntegrationSettings.objects.count(), 0)
+
+    def test_integration_secrets_admin_requires_superuser_even_with_model_permissions(self):
+        staff = get_user_model().objects.create_user("staff", password="test-password", is_staff=True)
+        staff.user_permissions.set(Permission.objects.filter(content_type__app_label="store", content_type__model="integrationsettings"))
+        self.client.force_login(staff)
+        self.assertEqual(self.client.get(reverse("admin:store_integrationsettings_add")).status_code, 403)
+        self.assertNotContains(self.client.get(reverse("admin:index")), "Подключение Telegram и оплаты")
 
     def test_admin_product_photo_preview_uses_converted_webp(self):
         with tempfile.TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):

@@ -2,9 +2,9 @@ import hashlib
 import hmac
 import json
 from decimal import Decimal
-from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
+from .integrations import get_runtime_config
 from .models import BotUser, Notification, Order, PaymentAttempt, PaymentEvent, Product
 
 
@@ -62,9 +62,10 @@ class PaymentError(ValueError):
 
 
 def signed_event(raw):
-    if not settings.PAYMENT_WEBHOOK_SECRET:
+    secret = get_runtime_config().payment_webhook_secret
+    if not secret:
         raise PaymentError("Секрет платежей не задан")
-    return hmac.new(settings.PAYMENT_WEBHOOK_SECRET.encode(), raw, hashlib.sha256).hexdigest()
+    return hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
 
 
 def process_payment_event(raw, signature):
@@ -106,19 +107,20 @@ class MissingChatError(RuntimeError):
     pass
 
 
-def send_notification(notification):
+def send_notification(notification, config=None):
     """One queued notification; a failed send never changes the original order."""
     import requests
-    if not settings.BOT_TOKEN:
+    config = config or get_runtime_config()
+    if not config.bot_token:
         raise RuntimeError("BOT_TOKEN не задан")
     if notification.kind == "shop":
-        chat_id = settings.SHOP_CHAT_ID
+        chat_id = config.shop_chat_id
     else:
         user = BotUser.objects.filter(telegram_id=notification.telegram_id).first()
         chat_id = user.chat_id if user else None
     if not chat_id:
         raise MissingChatError("Нет разрешённого чата для отправки")
-    response = requests.post(f"https://api.telegram.org/bot{settings.BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": notification.text}, timeout=12)
+    response = requests.post(f"https://api.telegram.org/bot{config.bot_token}/sendMessage", json={"chat_id": chat_id, "text": notification.text}, timeout=12)
     if response.status_code != 200:
         raise RuntimeError(f"Telegram HTTP {response.status_code}")
     if not response.json().get("ok"):
@@ -131,14 +133,17 @@ def send_notification(notification):
 
 
 def flush_notifications(limit=20):
+    config = get_runtime_config()
+    if not config.bot_token:
+        return
     pending = Notification.objects.filter(status="pending")
-    if not settings.SHOP_CHAT_ID:
+    if not config.shop_chat_id:
         pending = pending.exclude(kind="shop")
     for notification in pending.order_by("created_at")[:limit]:
         try:
-            send_notification(notification)
+            send_notification(notification, config)
         except Exception as exc:
             notification.attempts += 1
             notification.status = "failed" if isinstance(exc, MissingChatError) or notification.attempts >= 3 else "pending"
-            notification.last_error = str(exc).replace(settings.BOT_TOKEN, "[redacted]")[:500] if settings.BOT_TOKEN else str(exc)[:500]
+            notification.last_error = str(exc).replace(config.bot_token, "[redacted]")[:500]
             notification.save(update_fields=["status", "attempts", "last_error"])

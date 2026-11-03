@@ -1,7 +1,7 @@
 import time
 import requests
-from django.conf import settings
-from django.core.management.base import BaseCommand, CommandError
+from django.core.management.base import BaseCommand
+from store.integrations import get_runtime_config
 from store.models import BotUser, ShopSettings
 from store.services import flush_notifications, retry_buyer_notifications
 
@@ -10,15 +10,25 @@ class Command(BaseCommand):
     help = "Long polling Telegram-бота и доставка очереди уведомлений"
 
     def handle(self, *args, **options):
-        if not settings.BOT_TOKEN:
-            raise CommandError("BOT_TOKEN не задан")
-        if not ((settings.BOT_USERNAME and settings.BOT_APP_SHORT_NAME) or settings.PUBLIC_BASE_URL):
-            raise CommandError("Задайте BOT_USERNAME и BOT_APP_SHORT_NAME или PUBLIC_BASE_URL")
-        api = f"https://api.telegram.org/bot{settings.BOT_TOKEN}/"
         offset = None
-        self.stdout.write("Бот запущен")
+        active_token = ""
+        waiting_for = ""
         while True:
             try:
+                config = get_runtime_config()
+                if not config.bot_token or not ((config.bot_username and config.bot_app_short_name) or config.public_base_url):
+                    reason = "BOT_TOKEN" if not config.bot_token else "BOT_USERNAME и BOT_APP_SHORT_NAME или PUBLIC_BASE_URL"
+                    if reason != waiting_for:
+                        self.stdout.write(f"Бот ожидает настройки: {reason}")
+                        waiting_for = reason
+                    time.sleep(5)
+                    continue
+                waiting_for = ""
+                if config.bot_token != active_token:
+                    offset = None
+                    active_token = config.bot_token
+                    self.stdout.write("Бот запущен")
+                api = f"https://api.telegram.org/bot{config.bot_token}/"
                 flush_notifications()
                 result = requests.get(api + "getUpdates", params={"timeout": 20, "offset": offset, "allowed_updates": '["message"]'}, timeout=30).json()
                 if not result.get("ok"):
@@ -42,10 +52,10 @@ class Command(BaseCommand):
                             continue
                         BotUser.objects.update_or_create(telegram_id=user_id, defaults={"chat_id": chat["id"]})
                         retry_buyer_notifications(user_id)
-                        if settings.BOT_USERNAME and settings.BOT_APP_SHORT_NAME:
-                            url = f"https://t.me/{settings.BOT_USERNAME}/{settings.BOT_APP_SHORT_NAME}"
+                        if config.bot_username and config.bot_app_short_name:
+                            url = f"https://t.me/{config.bot_username}/{config.bot_app_short_name}"
                         else:
-                            url = settings.PUBLIC_BASE_URL
+                            url = config.public_base_url
                         shop = ShopSettings.objects.filter(pk=1).first() or ShopSettings()
                         answer = requests.post(api + "sendMessage", json={"chat_id": chat["id"], "text": f"Привет! Это {shop.name} — {shop.subtitle.lower()}. Открой каталог и выбери устройство.", "reply_markup": {"inline_keyboard": [[{"text": "Открыть каталог", "url": url}]]}}, timeout=12)
                         if answer.status_code != 200:
@@ -53,5 +63,5 @@ class Command(BaseCommand):
             except KeyboardInterrupt:
                 break
             except Exception as exc:
-                self.stderr.write(f"Ошибка бота: {str(exc).replace(settings.BOT_TOKEN, '[redacted]') if settings.BOT_TOKEN else exc}")
+                self.stderr.write(f"Ошибка бота: {str(exc).replace(active_token, '[redacted]') if active_token else exc}")
                 time.sleep(5)
