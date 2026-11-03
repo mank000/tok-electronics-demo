@@ -52,10 +52,12 @@ def product_context(item, **extra):
     accessories = list(item.accessories.filter(is_visible=True).prefetch_related("images")[:4])
     if not accessories and item.category.slug != "accessories":
         accessories = list(Product.objects.filter(category__slug="accessories", is_visible=True).exclude(pk=item.pk).prefetch_related("images")[:4])
+    published_reviews = item.reviews.filter(is_published=True, telegram_id__isnull=False)
     context = {
         "product": item, "review_form": ReviewForm(), "question_form": QuestionForm(),
-        "reviews": item.reviews.filter(is_published=True, telegram_id__isnull=False), "questions": item.questions.filter(is_published=True),
-        "rating": item.reviews.filter(is_published=True, telegram_id__isnull=False).aggregate(value=Avg("rating"))["value"],
+        "reviews": published_reviews, "questions": item.questions.filter(is_published=True),
+        "rating": published_reviews.aggregate(value=Avg("rating"))["value"],
+        "has_demo_reviews": published_reviews.filter(is_demo=True).exists(),
         "delivery_from": today + timedelta(days=item.delivery_min_days),
         "delivery_to": today + timedelta(days=item.delivery_max_days),
         "related": Product.objects.filter(category=item.category, is_visible=True).exclude(pk=item.pk).prefetch_related("images")[:4],
@@ -80,7 +82,7 @@ def owner(request):
 
 
 def purchased_item(profile, product):
-    return OrderItem.objects.filter(product=product, order__telegram_id=profile["id"], order__status=Order.Status.DELIVERED, order__payment_state__in=("paid", "receipt")).select_related("order").order_by("-order__created_at").first()
+    return OrderItem.objects.filter(product=product, order__telegram_id=profile["id"], order__is_demo=False, order__status=Order.Status.DELIVERED, order__payment_state__in=("paid", "receipt")).select_related("order").order_by("-order__created_at").first()
 
 
 @require_POST
@@ -461,7 +463,7 @@ def account_data(request):
         return HttpResponseForbidden("Проверка Telegram не пройдена")
     if not profile:
         return JsonResponse({"error": "Войдите через Telegram"}, status=401)
-    orders = Order.objects.filter(telegram_id=profile["id"])
+    orders = Order.objects.filter(telegram_id=profile["id"], is_demo=False)
     wishes = Wish.objects.filter(telegram_id=profile["id"])
     def item_data(item):
         return {"name": item.title, "quantity": item.quantity, "id": item.pk}

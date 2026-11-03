@@ -2,6 +2,7 @@ from pathlib import Path
 from django.core.files.base import ContentFile
 from django.core.management.base import BaseCommand
 from django.db.models import F
+from store.demo_content import PRODUCT_COPY
 from store.models import Category, Product, ProductCollection, ProductImage
 
 
@@ -44,16 +45,27 @@ class Command(BaseCommand):
             category, _ = Category.objects.update_or_create(slug=slug, defaults={"name": title, "icon": icon, "order": section_index})
             for index, (name, price) in enumerate(products):
                 product_slug = f"{slug}-{index+1}"
+                copy_description, copy_specs = PRODUCT_COPY[product_slug]
+                rich_specs = {"Модель": name, **copy_specs, "Гарантия": "12 месяцев"}
+                old_description = f"{name} — продуманный выбор на каждый день. Демонстрационная модель для учебного магазина."
+                old_specs = {"Гарантия": "12 месяцев", "Цвет": ["Графит", "Серебристый", "Песочный"][index % 3], "Модель": name}
                 product, created = Product.objects.get_or_create(slug=product_slug, defaults={
-                    "category": category, "name": name, "description": f"{name} — продуманный выбор на каждый день. Демонстрационная модель для учебного магазина.",
-                    "specs": {"Гарантия": "12 месяцев", "Цвет": ["Графит", "Серебристый", "Песочный"][index % 3], "Модель": name},
+                    "category": category, "name": name, "description": copy_description,
+                    "specs": rich_specs,
                     "price": price, "availability": ["stock", "stock", "transit", "preorder"][index % 4], "is_featured": index == 0,
                 })
                 if created:
                     count += 1
-                if product_slug in SPECIAL_DETAILS and product.description == f"{name} — продуманный выбор на каждый день. Демонстрационная модель для учебного магазина.":
-                    product.description, product.specs = SPECIAL_DETAILS[product_slug]
-                    product.save(update_fields=["description", "specs"])
+                previous_special = SPECIAL_DETAILS.get(product_slug)
+                changed_fields = []
+                if not created and product.description in (old_description, previous_special[0] if previous_special else None):
+                    product.description = copy_description
+                    changed_fields.append("description")
+                if not created and (product.specs == old_specs or (previous_special and product.specs == previous_special[1])):
+                    product.specs = rich_specs
+                    changed_fields.append("specs")
+                if changed_fields:
+                    product.save(update_fields=changed_fields)
                 images = list(product.images.all())
                 special = SPECIAL_PHOTOS.get(product_slug)
                 demo_photo = any(image.alt.startswith("Демо-фото ") and "ракурс" not in image.alt for image in images)

@@ -16,11 +16,12 @@ python3 -c 'import secrets; print(secrets.token_urlsafe(48))'
 ```bash
 docker compose up -d --build web
 docker compose exec web python manage.py seed_catalog
+docker compose exec web python manage.py seed_demo_feedback
 docker compose exec web python manage.py createsuperuser
 docker compose exec web python manage.py test store
 ```
 
-Откройте <http://localhost:8008/> и админку <http://localhost:8008/admin/>. Миграции применяются при старте `web`. Команда `seed_catalog` идемпотентна: повторный запуск не создаёт дубликаты и сохраняет уже отредактированные товары. Остановить: `docker compose down` (данные останутся в volumes). `docker compose down -v` удалит БД и изображения.
+Откройте <http://localhost:8008/> и админку <http://localhost:8008/admin/>. Миграции применяются при старте `web`. `seed_catalog` добавляет подробные демонстрационные описания и характеристики, сохраняет уже отредактированные товары. `seed_demo_feedback` добавляет по два вопроса с ответами и два отзыва с оценками на каждый из 29 товаров, а также десять явно помеченных учебных заказов, необходимых для проверки отзывов после покупки. Все примеры в карточках отмечены как демо; команда работает только при `DJANGO_DEBUG=1`, повторный запуск не создаёт копий и не публикует скрытое модератором. Остановить: `docker compose down` (данные останутся в volumes). `docker compose down -v` удалит БД и изображения.
 
 При `DJANGO_DEBUG=1` магазин и админка принимают формы из встроенного браузера с `Origin: null` только на хостах из `DJANGO_DEMO_NULL_ORIGIN_HOSTS`. Для HTTPS этот адрес также должен быть указан в `DJANGO_CSRF_TRUSTED_ORIGINS`. CSRF-токен и cookie по-прежнему обязательны; остальные хосты проходят обычную проверку origin Django.
 

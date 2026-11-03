@@ -188,6 +188,7 @@ class Order(models.Model):
     access_token = models.CharField("Токен доступа", max_length=64, unique=True, default=new_access_token, editable=False)
     checkout_key = models.UUIDField("Ключ оформления", unique=True, default=uuid.uuid4, editable=False)
     telegram_id = models.BigIntegerField("Telegram ID", null=True, blank=True, db_index=True)
+    is_demo = models.BooleanField("Демонстрационный заказ", default=False)
     name = models.CharField("Имя", max_length=100)
     phone = models.CharField("Телефон", max_length=32)
     delivery = models.CharField("Получение", max_length=12, choices=Delivery.choices)
@@ -293,6 +294,7 @@ class ProductReview(models.Model):
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="reviews")
     author = models.CharField("Имя", max_length=80)
     telegram_id = models.BigIntegerField("Telegram ID", null=True, blank=True, db_index=True)
+    is_demo = models.BooleanField("Демонстрационный отзыв", default=False)
     order_item = models.ForeignKey(OrderItem, on_delete=models.PROTECT, null=True, blank=True, related_name="reviews", verbose_name="Подтверждённая покупка")
     rating = models.PositiveSmallIntegerField("Оценка", choices=[(n, str(n)) for n in range(1, 6)])
     text = models.TextField("Отзыв", max_length=2000)
@@ -309,6 +311,7 @@ class ProductReview(models.Model):
         if self.is_published and (not self.telegram_id or not self.order_item_id
                 or self.order_item.product_id != self.product_id
                 or self.order_item.order.telegram_id != self.telegram_id
+                or self.order_item.order.is_demo != self.is_demo
                 or self.order_item.order.status != Order.Status.DELIVERED
                 or self.order_item.order.payment_state not in ("paid", "receipt")):
             raise ValidationError("Опубликовать можно только отзыв о доставленной покупке этого пользователя")
@@ -318,6 +321,7 @@ class ProductQuestion(models.Model):
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="questions")
     author = models.CharField("Имя", max_length=80)
     telegram_id = models.BigIntegerField("Telegram ID", null=True, blank=True, db_index=True)
+    is_demo = models.BooleanField("Демонстрационный вопрос", default=False)
     text = models.TextField("Вопрос", max_length=1000)
     answer = models.TextField("Ответ магазина", blank=True)
     is_published = models.BooleanField("Опубликован", default=False)

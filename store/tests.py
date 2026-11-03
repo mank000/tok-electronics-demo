@@ -14,6 +14,7 @@ from PIL import Image
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
@@ -22,7 +23,7 @@ from .integrations import encrypt_secret, get_runtime_config
 from .models import BotUser, BrowserLoginCode, Category, CustomerProfile, Favorite, IntegrationSettings, Notification, Order, PaymentAttempt, PaymentEvent, Product, ProductImage, ProductQuestion, ProductReview, RecentlyViewed, ReturnRequest, ShopSettings
 from .phone_login import normalize_phone
 from .security import TelegramAuthError, verify_init_data
-from .services import flush_notifications, process_payment_event, queue_order_changed, queue_shop, retry_buyer_notifications, signed_event
+from .services import flush_notifications, process_payment_event, queue_buyer, queue_order_changed, queue_shop, retry_buyer_notifications, signed_event
 
 
 TOKEN = "test-bot-token"
@@ -411,7 +412,12 @@ class SeedTests(TestCase):
     def test_seed_is_idempotent_and_images_are_local_webp(self):
         with tempfile.TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
             call_command("seed_catalog", verbosity=0)
+            self.assertIn("Компактный смартфон", Product.objects.get(slug="phones-1").description)
+            edited = Product.objects.get(slug="phones-2")
+            edited.description = "Текст магазина"
+            edited.save(update_fields=["description"])
             call_command("seed_catalog", verbosity=0)
+            self.assertEqual(Product.objects.get(slug="phones-2").description, "Текст магазина")
             self.assertEqual(Product.objects.count(), 29)
             self.assertEqual(ProductImage.objects.count(), 31)
             self.assertTrue(all(product.images.exists() for product in Product.objects.all()))
@@ -420,6 +426,28 @@ class SeedTests(TestCase):
                 self.assertEqual(source.format, "WEBP")
                 self.assertEqual(thumb.format, "WEBP")
                 self.assertLessEqual(max(thumb.size), 480)
+
+            with override_settings(DEBUG=True):
+                call_command("seed_demo_feedback", verbosity=0)
+                self.assertEqual(ProductReview.objects.filter(is_demo=True).count(), 58)
+                self.assertEqual(ProductQuestion.objects.filter(is_demo=True).count(), 58)
+                self.assertEqual(Order.objects.filter(is_demo=True).count(), 10)
+                queue_buyer(Order.objects.filter(is_demo=True).first(), "Учебное сообщение")
+                self.assertFalse(Notification.objects.filter(text="Учебное сообщение").exists())
+                for review in ProductReview.objects.filter(is_demo=True).select_related("order_item__order"):
+                    review.full_clean()
+                hidden = ProductReview.objects.filter(is_demo=True).first()
+                hidden.is_published = False
+                hidden.text = "Текст модератора"
+                hidden.save(update_fields=["is_published", "text"])
+                call_command("seed_demo_feedback", verbosity=0)
+                hidden.refresh_from_db()
+                self.assertFalse(hidden.is_published)
+                self.assertEqual(hidden.text, "Текст модератора")
+                self.assertEqual(ProductReview.objects.filter(is_demo=True).count(), 58)
+            with override_settings(DEBUG=False):
+                with self.assertRaises(CommandError):
+                    call_command("seed_demo_feedback", verbosity=0)
 
 @override_settings(BOT_TOKEN=TOKEN, PAYMENT_WEBHOOK_SECRET=SECRET, DEMO_PAYMENTS=True)
 class CommerceFeaturesTests(TestCase):
