@@ -1,9 +1,11 @@
 .git
 .env
+.env.prod
 .venv
 db.sqlite3
 media
 staticfiles
+backups
 __pycache__
 *.pyc
 .DS_Store

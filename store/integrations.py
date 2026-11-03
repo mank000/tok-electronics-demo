@@ -56,4 +56,4 @@ def get_runtime_config():
 
 def yookassa_configured():
     config = get_runtime_config()
-    return bool(config.yookassa_shop_id and config.yookassa_secret_key)
+    return settings.ALLOW_TEST_PAYMENTS and bool(config.yookassa_shop_id and config.yookassa_secret_key)

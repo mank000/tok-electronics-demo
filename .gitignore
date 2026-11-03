@@ -1,9 +1,11 @@
 .env
+.env.prod
 .venv/
 __pycache__/
 *.pyc
 db.sqlite3
 media/
 staticfiles/
+backups/
 .DS_Store
 *.mp4

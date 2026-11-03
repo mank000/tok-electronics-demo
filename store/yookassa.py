@@ -3,6 +3,7 @@
 from decimal import Decimal, InvalidOperation
 
 import requests
+from django.conf import settings
 from django.db import transaction
 
 from .integrations import get_runtime_config
@@ -14,6 +15,8 @@ API = "https://api.yookassa.ru/v3/payments"
 
 
 def credentials():
+    if not settings.ALLOW_TEST_PAYMENTS:
+        raise PaymentError("Тестовые платежи отключены на публичном сервере")
     config = get_runtime_config()
     if not config.yookassa_shop_id or not config.yookassa_secret_key:
         raise PaymentError("Тестовый магазин ЮKassa не настроен")
