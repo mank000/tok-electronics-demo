@@ -1,0 +1,41 @@
+{% load static %}<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>{% block title %}{{ shop_settings.name }} — {{ shop_settings.subtitle }}{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'store/style.css' %}?v=3">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script defer src="{% static 'store/app.js' %}"></script>
+</head>
+<body>
+  <div class="site-shell">
+    <header class="site-header">
+      <a class="brand" href="{% url 'catalog' %}" aria-label="{{ shop_settings.name }} — на главную">
+        {% if shop_settings.logo %}<img class="brand-logo" src="{{ shop_settings.logo.url }}" alt="">{% else %}<span class="brand-mark">✳</span>{% endif %}
+        <span>{{ shop_settings.name }}</span>
+      </a>
+      <nav class="top-nav">
+        <a href="{% url 'catalog' %}">Каталог</a>
+        <a href="{% url 'basket' %}" class="basket-link">Корзина <span id="cart-count">0</span></a>
+        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Сменить тему">◐</button>
+      </nav>
+    </header>
+    <main>{% block content %}{% endblock %}</main>
+    <footer class="footer">
+      <div class="footer-shop">
+        <strong>{{ shop_settings.name }}</strong> · {{ shop_settings.subtitle }}
+        {% if shop_settings.contact_phone %}<span>Телефон: {{ shop_settings.contact_phone }}</span>{% endif %}
+        {% if shop_settings.contact_email %}<span>Почта: <a href="mailto:{{ shop_settings.contact_email }}">{{ shop_settings.contact_email }}</a></span>{% endif %}
+        {% if shop_settings.pickup_address %}<span>Самовывоз: {{ shop_settings.pickup_address }}</span>{% endif %}
+        {% if shop_settings.legal_name %}<span>{{ shop_settings.legal_name }}</span>{% endif %}
+        {% if shop_settings.inn %}<span>ИНН {{ shop_settings.inn }}</span>{% endif %}
+        {% if shop_settings.ogrn %}<span>ОГРН/ОГРНИП {{ shop_settings.ogrn }}</span>{% endif %}
+        {% if shop_settings.legal_address %}<span>Юридический адрес: {{ shop_settings.legal_address }}</span>{% endif %}
+      </div>
+      <span><a href="{% url 'document' 'privacy' %}">Обработка данных</a> · <a href="{% url 'document' 'offer' %}">Оферта</a></span>
+    </footer>
+  </div>
+</body>
+</html>
