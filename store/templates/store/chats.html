@@ -1,0 +1,41 @@
+{% extends 'store/base.html' %}
+{% load static %}
+{% block title %}{% if share_product %}Отправить товар{% elif conversation_id %}Переписка{% else %}Чаты{% endif %} — {{ shop_settings.name }}{% endblock %}
+{% block content %}
+<section class="page-wrap chats-page" data-conversation-id="{{ conversation_id|default:'' }}" data-share-product-id="{{ share_product.pk|default:'' }}">
+  <div class="page-heading"><span class="eyebrow">ОБЩАЙТЕСЬ В МАГАЗИНЕ</span><h1>{% if share_product %}Отправить товар{% elif conversation_id %}Переписка{% else %}Чаты{% endif %}</h1></div>
+  <div id="chats-status" class="notice" role="status" hidden></div>
+  <div id="chats-login" class="notice" hidden>Войдите через Telegram, чтобы отправлять товары и сообщения. <a class="text-button" href="{% url 'account' %}?next={{ request.path|urlencode }}">Перейти ко входу ↗</a></div>
+
+  {% if conversation_id %}
+  <section id="chat-thread-view" class="chat-thread-view" hidden>
+    <a class="text-button" href="{% url 'chats' %}">← Все чаты</a>
+    <div class="chat-heading"><h2 id="chat-peer">Переписка</h2><span id="chat-peer-tag"></span><button id="chat-block" class="text-button" type="button">Заблокировать</button></div>
+    <p id="chat-blocked-note" class="notice" hidden></p>
+    <button id="chat-older" class="text-button" type="button" hidden>Показать предыдущие сообщения</button>
+    <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
+    <form id="chat-compose" class="chat-compose">
+      <label for="chat-text">Сообщение</label>
+      <textarea id="chat-text" name="text" rows="2" maxlength="1000" placeholder="Напишите сообщение…" required></textarea>
+      <div class="chat-compose-actions"><a class="text-button" href="{% url 'catalog' %}">Выбрать товар в каталоге</a><button class="button button-accent" type="submit">Отправить ↗</button></div>
+    </form>
+  </section>
+  {% else %}
+  <section id="chat-list-view" hidden>
+    {% if share_product %}
+    <article class="chat-share-product"><span class="eyebrow">ТОВАР ДЛЯ ОТПРАВКИ</span>{% with photo=share_product.first_image %}{% if photo %}<img src="{{ photo.thumb.url }}" alt="" width="110" height="110">{% endif %}{% endwith %}<strong>{{ share_product.name }}</strong><a class="text-button" href="{% url 'product' share_product.slug %}">Открыть товар ↗</a></article>
+    <label class="chat-caption-label" for="chat-caption">Подпись к товару</label>
+    <textarea id="chat-caption" rows="3" maxlength="1000" placeholder="Например: Как тебе этот вариант?"></textarea>
+    <p class="microcopy">Выберите чат ниже. Товар и подпись отправятся одним сообщением.</p>
+    {% endif %}
+    <div class="chat-tools">
+      <div><h2>Ваш тег</h2><p>По нему друзья смогут найти вас в магазине. Поиск работает только по точному тегу.</p><form id="chat-tag-form" class="chat-inline-form"><label for="chat-own-tag">@тег</label><input id="chat-own-tag" name="tag" maxlength="25" autocomplete="off" placeholder="@ваш_тег" required><button class="button button-outline" type="submit">Сохранить</button><button id="chat-copy-tag" class="text-button" type="button" hidden>Скопировать тег</button></form></div>
+      <div><h2>Новый чат</h2><p>Укажите тег человека, которому хотите написать.</p><form id="chat-find-form" class="chat-inline-form"><label for="chat-find-tag">@тег получателя</label><input id="chat-find-tag" name="tag" maxlength="25" autocomplete="off" placeholder="@друг_01" required><button class="button button-accent" type="submit">Найти ↗</button></form></div>
+    </div>
+    <h2>Мои чаты</h2>
+    <div id="chat-list" class="chat-list"><p class="loading">Загружаем…</p></div>
+  </section>
+  {% endif %}
+</section>
+<script defer src="{% static 'store/chats.js' %}?v=1"></script>
+{% endblock %}
