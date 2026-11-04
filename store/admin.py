@@ -383,9 +383,9 @@ class BotUserAdmin(ResponsiveAdmin):
 
 @admin.register(CustomerProfile)
 class CustomerProfileAdmin(ResponsiveAdmin):
-    list_display = ("name", "telegram_id", "registered_at")
-    search_fields = ("name", "=telegram_id")
-    readonly_fields = ("telegram_id", "name", "registered_at")
+    list_display = ("name", "chat_tag", "telegram_id", "registered_at")
+    search_fields = ("name", "chat_tag", "=telegram_id")
+    readonly_fields = ("telegram_id", "name", "chat_tag", "registered_at")
 
     def has_add_permission(self, request):
         return False

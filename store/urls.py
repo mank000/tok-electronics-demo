@@ -1,5 +1,5 @@
 from django.urls import path
-from . import views
+from . import chat_views, views
 
 urlpatterns = [
     path("", views.catalog, name="catalog"),
@@ -12,6 +12,15 @@ urlpatterns = [
     path("api/product/<slug:slug>/favorite/", views.favorite_state, name="favorite_state"),
     path("account/", views.account, name="account"),
     path("support/", views.support, name="support"),
+    path("messages/", chat_views.chat_page, name="chats"),
+    path("messages/share/<slug:slug>/", chat_views.share_page, name="chat_share"),
+    path("messages/<int:conversation_id>/", chat_views.conversation_page, name="chat_conversation"),
+    path("api/chats/", chat_views.api_chats, name="api_chats"),
+    path("api/chats/tag/", chat_views.api_chat_tag, name="api_chat_tag"),
+    path("api/chats/start/", chat_views.api_chat_start, name="api_chat_start"),
+    path("api/chats/<int:conversation_id>/", chat_views.api_chat_detail, name="api_chat_detail"),
+    path("api/chats/<int:conversation_id>/send/", chat_views.api_chat_send, name="api_chat_send"),
+    path("api/chats/<int:conversation_id>/block/", chat_views.api_chat_block, name="api_chat_block"),
     path("account/<slug:section>/", views.account, name="account_section"),
     path("api/account/", views.account_data, name="account_data"),
     path("api/me/registration/", views.registration, name="registration"),

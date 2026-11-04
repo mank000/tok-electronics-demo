@@ -4,6 +4,7 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from django.db import models
+from django.db.models import F, Q
 from django.utils import timezone
 from .images import open_raster, webp_content
 
@@ -189,6 +190,7 @@ class SupportMessage(models.Model):
 class CustomerProfile(models.Model):
     telegram_id = models.BigIntegerField("Telegram ID", unique=True)
     name = models.CharField("Имя покупателя", max_length=80)
+    chat_tag = models.CharField("Тег в чате", max_length=24, unique=True, null=True, blank=True)
     registered_at = models.DateTimeField("Зарегистрирован", auto_now_add=True)
 
     class Meta:
@@ -197,6 +199,42 @@ class CustomerProfile(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class ChatConversation(models.Model):
+    left = models.ForeignKey(CustomerProfile, on_delete=models.CASCADE, related_name="chats_as_left")
+    right = models.ForeignKey(CustomerProfile, on_delete=models.CASCADE, related_name="chats_as_right")
+    left_blocked = models.BooleanField(default=False)
+    right_blocked = models.BooleanField(default=False)
+    left_read_message_id = models.PositiveBigIntegerField(default=0)
+    right_read_message_id = models.PositiveBigIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["left", "right"], name="unique_chat_pair"),
+            models.CheckConstraint(condition=Q(left_id__lt=F("right_id")), name="ordered_chat_pair"),
+        ]
+        verbose_name = "Переписка покупателей"
+        verbose_name_plural = "Переписки покупателей"
+
+
+class ChatMessage(models.Model):
+    conversation = models.ForeignKey(ChatConversation, on_delete=models.CASCADE, related_name="messages")
+    sender = models.ForeignKey(CustomerProfile, on_delete=models.CASCADE, related_name="sent_chat_messages")
+    text = models.TextField("Текст или подпись", max_length=1000, blank=True)
+    product = models.ForeignKey(Product, on_delete=models.SET_NULL, null=True, blank=True)
+    product_name = models.CharField("Название товара при отправке", max_length=160, blank=True)
+    client_nonce = models.UUIDField(null=True, blank=True, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [models.CheckConstraint(condition=~Q(text="") | ~Q(product_name=""), name="chat_message_has_content")]
+        verbose_name = "Сообщение покупателей"
+        verbose_name_plural = "Сообщения покупателей"
 
 
 class BrowserLoginCode(models.Model):

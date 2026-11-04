@@ -21,7 +21,7 @@ from django.urls import reverse
 from django.utils import timezone
 from .integrations import encrypt_secret, get_runtime_config
 from .analytics import dashboard_data, month_at
-from .models import BotUser, BrowserLoginCode, Category, CustomerProfile, Favorite, IntegrationSettings, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductImage, ProductQuestion, ProductReview, RecentlyViewed, ReturnRequest, ShopSettings, SupportMessage, SupportTicket, Wish
+from .models import BotUser, BrowserLoginCode, Category, ChatConversation, ChatMessage, CustomerProfile, Favorite, IntegrationSettings, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductImage, ProductQuestion, ProductReview, RecentlyViewed, ReturnRequest, ShopSettings, SupportMessage, SupportTicket, Wish
 from .phone_login import normalize_phone
 from .security import TelegramAuthError, verify_init_data
 from .services import flush_notifications, process_payment_event, queue_buyer, queue_order_changed, queue_shop, retry_buyer_notifications, signed_event
@@ -897,3 +897,103 @@ class SupportTests(TestCase):
         self.assertContains(self.client.get(reverse("support")), "https://t.me/test_shop_bot?start=support")
         with override_settings(BOT_TOKEN=""):
             self.assertContains(self.client.get(reverse("support")), "после настройки бота")
+
+
+@override_settings(BOT_TOKEN=TOKEN)
+class CustomerChatTests(TestCase):
+    def setUp(self):
+        self.alice = CustomerProfile.objects.create(telegram_id=123, name="Алиса", chat_tag="alisa_01")
+        self.bob = CustomerProfile.objects.create(telegram_id=456, name="Борис", chat_tag="boris_02")
+        self.category = Category.objects.create(name="Телефоны", slug="phones")
+        self.product = Product.objects.create(category=self.category, name="Смартфон", slug="phone", description="Описание", price=Decimal("1000"))
+
+    def auth(self, user_id):
+        return {"HTTP_X_TELEGRAM_INIT_DATA": telegram_data(user_id)}
+
+    def post_json(self, url, user_id, data):
+        return self.client.post(url, json.dumps(data), content_type="application/json", **self.auth(user_id))
+
+    def start(self):
+        response = self.post_json(reverse("api_chat_start"), 123, {"tag": "@boris_02"})
+        self.assertEqual(response.status_code, 200)
+        return response.json()["id"]
+
+    def test_exact_tag_and_private_conversation(self):
+        self.assertEqual(self.client.get(reverse("api_chats")).status_code, 401)
+        self.assertEqual(self.client.get(reverse("api_chats"), HTTP_X_TELEGRAM_INIT_DATA="bad").status_code, 403)
+        self.assertEqual(self.post_json(reverse("api_chat_start"), 123, {"tag": "boris"}).status_code, 404)
+        self.assertEqual(self.post_json(reverse("api_chat_start"), 123, {"tag": "alisa_01"}).status_code, 400)
+        chat_id = self.start()
+        self.assertEqual(self.start(), chat_id)
+        self.assertEqual(ChatConversation.objects.count(), 1)
+        self.assertEqual(self.client.get(reverse("api_chat_detail", args=[chat_id]), **self.auth(789)).status_code, 404)
+        self.assertEqual(self.post_json(reverse("api_chat_send", args=[chat_id]), 789, {"text": "Чужое сообщение"}).status_code, 404)
+        self.assertEqual(self.client.get(reverse("api_chats"), **self.auth(456)).json()["conversations"][0]["peer"]["tag"], "alisa_01")
+        block = reverse("api_chat_block", args=[chat_id])
+        self.assertEqual(self.post_json(block, 456, {"blocked": True}).json()["blocked_by_me"], True)
+        self.assertEqual(self.post_json(reverse("api_chat_send", args=[chat_id]), 123, {"text": "После блокировки"}).status_code, 403)
+        self.assertTrue(self.client.get(reverse("api_chat_detail", args=[chat_id]), **self.auth(123)).json()["blocked_by_peer"])
+        self.assertEqual(self.post_json(block, 456, {"blocked": False}).json()["blocked_by_me"], False)
+
+    def test_tag_can_be_chosen_and_must_be_unique(self):
+        url = reverse("api_chat_tag")
+        self.assertEqual(self.post_json(url, 123, {"tag": "@Новый_Тег"}).json()["tag"], "новый_тег")
+        self.assertEqual(self.post_json(url, 456, {"tag": "новый_тег"}).status_code, 409)
+        self.assertEqual(self.post_json(url, 456, {"tag": "a"}).status_code, 400)
+        self.alice.refresh_from_db()
+        self.assertEqual(self.alice.chat_tag, "новый_тег")
+
+    def test_product_with_caption_text_reply_unread_and_idempotency(self):
+        chat_id = self.start()
+        BotUser.objects.create(telegram_id=456, chat_id=456)
+        send = reverse("api_chat_send", args=[chat_id])
+        nonce = str(uuid.uuid4())
+        response = self.post_json(send, 123, {"product_id": self.product.pk, "text": "Как тебе?", "nonce": nonce})
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(self.post_json(send, 123, {"product_id": self.product.pk, "text": "Как тебе?", "nonce": nonce}).json()["duplicate"], True)
+        self.assertEqual(self.post_json(send, 123, {"text": "Напиши, что думаешь"}).status_code, 201)
+        self.assertEqual(ChatMessage.objects.count(), 2)
+        self.assertEqual(Notification.objects.filter(kind="buyer", telegram_id=456).count(), 1)
+        bob_list = self.client.get(reverse("api_chats"), **self.auth(456)).json()
+        self.assertEqual(bob_list["conversations"][0]["unread"], 2)
+        detail = self.client.get(reverse("api_chat_detail", args=[chat_id]), **self.auth(456)).json()
+        self.assertEqual(detail["messages"][0]["product"]["name"], "Смартфон")
+        self.assertEqual(detail["messages"][0]["text"], "Как тебе?")
+        self.assertEqual(self.client.get(reverse("api_chats"), **self.auth(456)).json()["conversations"][0]["unread"], 0)
+        self.assertEqual(self.post_json(send, 456, {"text": "Нравится!"}).status_code, 201)
+        self.assertEqual(self.client.get(reverse("api_chat_detail", args=[chat_id]), **self.auth(123)).json()["messages"][-1]["text"], "Нравится!")
+        self.product.is_visible = False
+        self.product.save(update_fields=["is_visible"])
+        hidden = self.client.get(reverse("api_chat_detail", args=[chat_id]), **self.auth(123)).json()["messages"][0]["product"]
+        self.assertEqual(hidden["name"], "Смартфон")
+        self.assertEqual(hidden["url"], "")
+
+    def test_message_validation_and_history_pages(self):
+        chat_id = self.start()
+        send = reverse("api_chat_send", args=[chat_id])
+        self.assertEqual(self.post_json(send, 123, {"text": " "}).status_code, 400)
+        self.assertEqual(self.post_json(send, 123, {"text": "x" * 1001}).status_code, 400)
+        self.product.is_visible = False
+        self.product.save(update_fields=["is_visible"])
+        self.assertEqual(self.post_json(send, 123, {"product_id": self.product.pk}).status_code, 404)
+        self.product.is_visible = True
+        self.product.save(update_fields=["is_visible"])
+        chat = ChatConversation.objects.get(pk=chat_id)
+        ChatMessage.objects.bulk_create([ChatMessage(conversation=chat, sender=self.alice, text=f"Сообщение {n}") for n in range(55)])
+        first_page = self.client.get(reverse("api_chat_detail", args=[chat_id]), **self.auth(456)).json()
+        self.assertEqual(len(first_page["messages"]), 50)
+        self.assertTrue(first_page["has_more"])
+        before = first_page["messages"][0]["id"]
+        older = self.client.get(reverse("api_chat_detail", args=[chat_id]) + f"?before={before}", **self.auth(456)).json()
+        self.assertEqual(len(older["messages"]), 5)
+        self.assertFalse(older["has_more"])
+        self.assertEqual(self.client.get(reverse("api_chat_detail", args=[chat_id]) + "?after=bad", **self.auth(456)).status_code, 400)
+
+    def test_share_screen_and_browser_session(self):
+        self.assertContains(self.client.get(reverse("product", args=[self.product.slug])), "Отправить в чат")
+        self.assertContains(self.client.get(reverse("chat_share", args=[self.product.slug])), "Подпись к товару")
+        session = self.client.session
+        session["telegram_id"] = 123
+        session["telegram_name"] = "Алиса"
+        session.save()
+        self.assertEqual(self.client.get(reverse("api_chats")).json()["tag"], "alisa_01")
