@@ -148,6 +148,44 @@ class BotUser(models.Model):
         return str(self.telegram_id)
 
 
+class SupportTicket(models.Model):
+    class Status(models.TextChoices):
+        OPEN = "open", "Открыто"
+        ANSWERED = "answered", "Ответили"
+        CLOSED = "closed", "Закрыто"
+
+    telegram_id = models.BigIntegerField("Telegram ID покупателя", db_index=True)
+    status = models.CharField("Состояние", max_length=12, choices=Status.choices, default=Status.OPEN)
+    created_at = models.DateTimeField("Создано", auto_now_add=True)
+    updated_at = models.DateTimeField("Обновлено", auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+        verbose_name = "Обращение в поддержку"
+        verbose_name_plural = "Поддержка"
+
+    def __str__(self):
+        return f"Обращение №{self.pk}"
+
+
+class SupportMessage(models.Model):
+    class Sender(models.TextChoices):
+        BUYER = "buyer", "Покупатель"
+        STAFF = "staff", "Сотрудник"
+
+    ticket = models.ForeignKey(SupportTicket, on_delete=models.CASCADE, related_name="messages")
+    sender = models.CharField("Отправитель", max_length=8, choices=Sender.choices)
+    text = models.TextField("Сообщение", max_length=2000)
+    telegram_message_id = models.BigIntegerField(null=True, blank=True)
+    created_at = models.DateTimeField("Создано", auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        constraints = [models.UniqueConstraint(fields=["ticket", "telegram_message_id"], name="unique_support_telegram_message")]
+        verbose_name = "Сообщение поддержки"
+        verbose_name_plural = "Сообщения поддержки"
+
+
 class CustomerProfile(models.Model):
     telegram_id = models.BigIntegerField("Telegram ID", unique=True)
     name = models.CharField("Имя покупателя", max_length=80)

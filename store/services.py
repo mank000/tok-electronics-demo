@@ -37,7 +37,11 @@ def queue_shop(text):
 
 def queue_buyer(order, text):
     if order.telegram_id and not order.is_demo:
-        Notification.objects.create(kind="buyer", telegram_id=order.telegram_id, text=text)
+        queue_telegram(order.telegram_id, text)
+
+
+def queue_telegram(telegram_id, text):
+    return Notification.objects.create(kind="buyer", telegram_id=telegram_id, text=text)
 
 
 def queue_order_created(order):

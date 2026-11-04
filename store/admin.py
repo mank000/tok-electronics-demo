@@ -11,8 +11,9 @@ from django.utils.html import format_html
 from django.views.decorators.debug import sensitive_post_parameters
 from .analytics import dashboard_data
 from .integrations import encrypt_secret
-from .models import BotUser, Category, CustomerProfile, Favorite, IntegrationSettings, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductCollection, ProductImage, ProductQuestion, ProductReview, ReturnRequest, ShopAnalytics, ShopSettings, Wish
-from .services import queue_buyer, queue_order_changed
+from .models import BotUser, Category, CustomerProfile, Favorite, IntegrationSettings, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductCollection, ProductImage, ProductQuestion, ProductReview, ReturnRequest, ShopAnalytics, ShopSettings, SupportMessage, SupportTicket, Wish
+from .services import queue_buyer, queue_order_changed, queue_telegram
+from .support import reply_to_ticket
 
 
 admin.site.site_header = "Управление магазином"
@@ -321,6 +322,57 @@ class NotificationAdmin(ResponsiveAdmin):
     search_fields = ("text", "last_error", "=telegram_id")
     readonly_fields = ("kind", "telegram_id", "text", "status", "attempts", "last_error", "created_at", "sent_at")
     actions = (retry_notifications,)
+
+
+class SupportTicketForm(forms.ModelForm):
+    reply_text = forms.CharField(
+        label="Ответ покупателю", required=False, max_length=2000,
+        widget=forms.Textarea(attrs={"rows": 5}),
+        help_text="Ответ сохранится в переписке и уйдёт покупателю в личный чат с ботом.",
+    )
+
+    class Meta:
+        model = SupportTicket
+        fields = ("status",)
+
+
+class SupportMessageInline(admin.TabularInline):
+    model = SupportMessage
+    extra = 0
+    fields = ("created_at", "sender", "text")
+    readonly_fields = fields
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(SupportTicket)
+class SupportTicketAdmin(ResponsiveAdmin):
+    form = SupportTicketForm
+    list_display = ("id", "telegram_id", "status", "updated_at", "created_at")
+    list_filter = ("status", "created_at")
+    search_fields = ("=telegram_id", "messages__text")
+    readonly_fields = ("telegram_id", "created_at", "updated_at")
+    fields = ("telegram_id", "status", "created_at", "updated_at", "reply_text")
+    inlines = (SupportMessageInline,)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def save_model(self, request, obj, form, change):
+        reply = form.cleaned_data["reply_text"].strip()
+        was_closed = SupportTicket.objects.filter(pk=obj.pk, status=SupportTicket.Status.CLOSED).exists()
+        super().save_model(request, obj, form, change)
+        if reply:
+            reply_to_ticket(obj, reply)
+        elif obj.status == SupportTicket.Status.CLOSED and not was_closed:
+            queue_telegram(obj.telegram_id, f"Обращение поддержки №{obj.pk} закрыто. Если нужна помощь, отправьте /support.")
 
 
 @admin.register(BotUser)

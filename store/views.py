@@ -1,4 +1,5 @@
 import json
+import re
 import uuid
 from datetime import timedelta
 from decimal import Decimal
@@ -454,6 +455,14 @@ def account(request, section=None):
     if section not in (None, "orders", "purchases", "wishes", "favorites"):
         return HttpResponse(status=404)
     return page(request, "account", {"account_section": section, "telegram_login_ready": telegram_login_configured(), "phone_login_ready": bool(get_runtime_config().bot_token)})
+
+
+def support(request):
+    config = get_runtime_config()
+    username = config.bot_username
+    if not config.bot_token or not re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
+        username = ""
+    return page(request, "support", {"bot_username": username})
 
 
 def account_data(request):
