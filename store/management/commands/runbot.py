@@ -2,9 +2,21 @@ import time
 import requests
 from django.core.management.base import BaseCommand
 from store.integrations import get_runtime_config
-from store.models import BotUser, ShopSettings
+from store.models import BotUser, ShopSettings, SupportTicket
 from store.phone_login import normalize_phone
 from store.services import flush_notifications, retry_buyer_notifications
+from store.support import active_ticket, open_ticket, receive_message
+
+
+def send_text(api, chat_id, text, reply_markup=None):
+    payload = {"chat_id": chat_id, "text": text}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    answer = requests.post(api + "sendMessage", json=payload, timeout=12)
+    if answer.status_code != 200:
+        raise RuntimeError(f"Telegram HTTP {answer.status_code}")
+    if not answer.json().get("ok"):
+        raise RuntimeError("Telegram отклонил сообщение")
 
 
 class Command(BaseCommand):
@@ -48,23 +60,37 @@ class Command(BaseCommand):
                             BotUser.objects.filter(phone_digits=digits).exclude(telegram_id=sender_id).update(phone="", phone_digits="")
                             BotUser.objects.update_or_create(telegram_id=sender_id, defaults={"chat_id": chat["id"], "phone": phone, "phone_digits": digits})
                     if text.startswith("/chatid"):
-                        answer = requests.post(api + "sendMessage", json={"chat_id": chat["id"], "text": f"ID этого чата: {chat['id']}"}, timeout=12)
-                        if answer.status_code != 200:
-                            raise RuntimeError(f"Telegram HTTP {answer.status_code}")
+                        send_text(api, chat["id"], f"ID этого чата: {chat['id']}")
+                    if chat.get("type") != "private" or not sender_id:
+                        continue
+                    if text == "/support" or text.startswith("/start support"):
+                        BotUser.objects.update_or_create(telegram_id=sender_id, defaults={"chat_id": chat["id"]})
+                        ticket = open_ticket(sender_id)
+                        send_text(api, chat["id"], f"Поддержка · обращение №{ticket.pk}. Напишите вопрос одним или несколькими сообщениями. Ответ придёт сюда. Чтобы завершить переписку, отправьте /done.")
+                        continue
+                    if text == "/done":
+                        ticket = active_ticket(sender_id)
+                        if ticket:
+                            ticket.status = SupportTicket.Status.CLOSED
+                            ticket.save(update_fields=["status", "updated_at"])
+                        send_text(api, chat["id"], "Обращение закрыто. Если понадобится помощь, отправьте /support.")
+                        continue
                     if text.startswith("/start") and chat.get("type") == "private":
-                        user_id = sender_id
-                        if not user_id:
-                            continue
-                        BotUser.objects.update_or_create(telegram_id=user_id, defaults={"chat_id": chat["id"]})
-                        retry_buyer_notifications(user_id)
+                        BotUser.objects.update_or_create(telegram_id=sender_id, defaults={"chat_id": chat["id"]})
+                        retry_buyer_notifications(sender_id)
                         if config.bot_username and config.bot_app_short_name:
                             url = f"https://t.me/{config.bot_username}/{config.bot_app_short_name}"
                         else:
                             url = config.public_base_url
                         shop = ShopSettings.objects.filter(pk=1).first() or ShopSettings()
-                        answer = requests.post(api + "sendMessage", json={"chat_id": chat["id"], "text": f"Привет! Это {shop.name} — {shop.subtitle.lower()}. Открой каталог и выбери устройство.", "reply_markup": {"inline_keyboard": [[{"text": "Открыть каталог", "url": url}]]}}, timeout=12)
-                        if answer.status_code != 200:
-                            raise RuntimeError(f"Telegram HTTP {answer.status_code}")
+                        send_text(api, chat["id"], f"Привет! Это {shop.name} — {shop.subtitle.lower()}. Открой каталог и выбери устройство. Если нужна помощь, отправь /support.", {"inline_keyboard": [[{"text": "Открыть каталог", "url": url}]]})
+                        continue
+                    if text and not text.startswith("/"):
+                        ticket = receive_message(sender_id, message.get("message_id"), text)
+                        if ticket:
+                            send_text(api, chat["id"], f"Сообщение по обращению №{ticket.pk} получено. Ответим здесь.")
+                        elif not active_ticket(sender_id):
+                            send_text(api, chat["id"], "Чтобы написать в поддержку, отправьте /support.")
             except KeyboardInterrupt:
                 break
             except Exception as exc:

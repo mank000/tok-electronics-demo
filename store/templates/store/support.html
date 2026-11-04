@@ -1,0 +1,16 @@
+{% extends 'store/base.html' %}
+{% block title %}Поддержка — {{ shop_settings.name }}{% endblock %}
+{% block content %}
+<section class="page-wrap document-page">
+  <span class="eyebrow">ПОМОЩЬ ПОКУПАТЕЛЯМ</span>
+  <h1>Поддержка</h1>
+  {% if bot_username %}
+    <p>Напишите нам в личный чат с ботом. Можно спросить о товаре, заказе, доставке или возврате. Если вопрос о заказе, укажите его номер.</p>
+    <p><a class="button button-accent" data-telegram-link href="https://t.me/{{ bot_username }}?start=support">Написать в Telegram ↗</a></p>
+    <p class="microcopy">Бот создаст обращение, а ответ сотрудника придёт в этот же чат. Команда /done завершит переписку.</p>
+  {% else %}
+    <p class="notice">Поддержка в Telegram появится после настройки бота.</p>
+    {% if shop_settings.contact_email %}<p>Пока можно написать на <a class="text-button" href="mailto:{{ shop_settings.contact_email }}">{{ shop_settings.contact_email }}</a>.</p>{% endif %}
+  {% endif %}
+</section>
+{% endblock %}

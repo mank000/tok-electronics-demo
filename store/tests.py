@@ -21,10 +21,11 @@ from django.urls import reverse
 from django.utils import timezone
 from .integrations import encrypt_secret, get_runtime_config
 from .analytics import dashboard_data, month_at
-from .models import BotUser, BrowserLoginCode, Category, CustomerProfile, Favorite, IntegrationSettings, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductImage, ProductQuestion, ProductReview, RecentlyViewed, ReturnRequest, ShopSettings, Wish
+from .models import BotUser, BrowserLoginCode, Category, CustomerProfile, Favorite, IntegrationSettings, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductImage, ProductQuestion, ProductReview, RecentlyViewed, ReturnRequest, ShopSettings, SupportMessage, SupportTicket, Wish
 from .phone_login import normalize_phone
 from .security import TelegramAuthError, verify_init_data
 from .services import flush_notifications, process_payment_event, queue_buyer, queue_order_changed, queue_shop, retry_buyer_notifications, signed_event
+from .support import open_ticket, receive_message
 
 
 TOKEN = "test-bot-token"
@@ -833,3 +834,66 @@ class AnalyticsTests(TestCase):
         other_staff.user_permissions.add(Permission.objects.get(codename="view_product", content_type__app_label="store", content_type__model="product"))
         self.client.force_login(other_staff)
         self.assertEqual(self.client.get(url).status_code, 403)
+
+
+@override_settings(BOT_TOKEN=TOKEN, BOT_USERNAME="test_shop_bot", BOT_APP_SHORT_NAME="shop")
+class SupportTests(TestCase):
+    def test_bot_support_conversation_is_private_persisted_and_idempotent(self):
+        def incoming(update_id, chat_id, kind, text, message_id):
+            return {"update_id": update_id, "message": {
+                "message_id": message_id, "text": text,
+                "from": {"id": chat_id}, "chat": {"id": chat_id, "type": kind},
+            }}
+
+        updates = {"ok": True, "result": [
+            incoming(1, -100, "supergroup", "/support", 1),
+            incoming(2, 123, "private", "/start support", 10),
+            incoming(3, 123, "private", "Где мой заказ №7?", 11),
+            incoming(4, 123, "private", "Где мой заказ №7?", 11),
+            incoming(5, 123, "private", "/done", 12),
+        ]}
+        with patch("requests.get", side_effect=[Mock(json=lambda: updates), KeyboardInterrupt]), patch(
+            "requests.post", return_value=Mock(status_code=200, json=lambda: {"ok": True})
+        ) as send:
+            call_command("runbot")
+        ticket = SupportTicket.objects.get()
+        self.assertEqual((ticket.telegram_id, ticket.status), (123, SupportTicket.Status.CLOSED))
+        self.assertEqual(list(ticket.messages.values_list("text", flat=True)), ["Где мой заказ №7?"])
+        self.assertTrue(Notification.objects.filter(kind="shop", status="internal", text__contains=f"№{ticket.pk}").exists())
+        self.assertEqual(send.call_count, 3)
+        self.assertEqual(send.call_args.kwargs["json"]["chat_id"], 123)
+        self.assertNotEqual(open_ticket(123).pk, ticket.pk)
+
+    def test_staff_reply_is_saved_and_queued_to_buyer(self):
+        BotUser.objects.create(telegram_id=123, chat_id=123)
+        ticket = open_ticket(123)
+        self.assertEqual(receive_message(123, 41, "Нужна помощь"), ticket)
+        self.assertIsNone(receive_message(123, 41, "Нужна помощь"))
+        staff = get_user_model().objects.create_superuser("support_admin", "staff@example.test", "test-password")
+        self.client.force_login(staff)
+        url = reverse("admin:store_supportticket_change", args=[ticket.pk])
+        self.assertContains(self.client.get(url), "Нужна помощь")
+        response = self.client.post(url, {
+            "status": "open", "reply_text": "Проверим заказ и напишем вам.",
+            "messages-TOTAL_FORMS": "0", "messages-INITIAL_FORMS": "0",
+            "messages-MIN_NUM_FORMS": "0", "messages-MAX_NUM_FORMS": "0",
+        })
+        self.assertEqual(response.status_code, 302)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, SupportTicket.Status.ANSWERED)
+        self.assertEqual(ticket.messages.filter(sender=SupportMessage.Sender.STAFF).get().text, "Проверим заказ и напишем вам.")
+        self.assertTrue(Notification.objects.filter(kind="buyer", telegram_id=123, text__contains="Проверим заказ").exists())
+        with patch("requests.post", return_value=Mock(status_code=200, json=lambda: {"ok": True})) as send:
+            flush_notifications()
+        self.assertEqual(send.call_args.kwargs["json"]["chat_id"], 123)
+        self.client.post(url, {
+            "status": "closed", "reply_text": "",
+            "messages-TOTAL_FORMS": "0", "messages-INITIAL_FORMS": "0",
+            "messages-MIN_NUM_FORMS": "0", "messages-MAX_NUM_FORMS": "0",
+        })
+        self.assertTrue(Notification.objects.filter(kind="buyer", telegram_id=123, text__contains="закрыто").exists())
+
+    def test_support_link_uses_configured_bot(self):
+        self.assertContains(self.client.get(reverse("support")), "https://t.me/test_shop_bot?start=support")
+        with override_settings(BOT_TOKEN=""):
+            self.assertContains(self.client.get(reverse("support")), "после настройки бота")

@@ -2,6 +2,12 @@
   const tg = window.Telegram?.WebApp;
   const root = document.documentElement;
   const themeButton = document.getElementById('theme-toggle');
+  document.querySelectorAll('[data-telegram-link]').forEach(link => link.addEventListener('click', event => {
+    if (tg?.initData && tg.openTelegramLink) {
+      event.preventDefault();
+      tg.openTelegramLink(link.href);
+    }
+  }));
   function applyTheme() {
     if (tg?.initData) {
       root.dataset.telegram = 'on';

@@ -11,6 +11,7 @@ urlpatterns = [
     path("product/<slug:slug>/viewed/", views.record_view, name="record_view"),
     path("api/product/<slug:slug>/favorite/", views.favorite_state, name="favorite_state"),
     path("account/", views.account, name="account"),
+    path("support/", views.support, name="support"),
     path("account/<slug:section>/", views.account, name="account_section"),
     path("api/account/", views.account_data, name="account_data"),
     path("api/me/registration/", views.registration, name="registration"),
