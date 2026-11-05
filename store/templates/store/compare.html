@@ -1,0 +1,29 @@
+{% extends 'store/base.html' %}
+{% block title %}Сравнение товаров — {{ shop_settings.name }}{% endblock %}
+{% block content %}
+<div class="page-wrap compare-page" id="compare-page" data-category="{{ selected_category }}">
+  <div class="breadcrumbs"><a href="{% url 'catalog' %}">Каталог</a> / Сравнение</div>
+  <div class="page-heading compare-heading"><div><span class="eyebrow">ВЫБИРАЙТЕ УДОБНО</span><h1>Сравнение товаров</h1><p>Сопоставьте цену и характеристики моделей из одного раздела.</p></div>{% if groups %}<button class="text-button" type="button" id="compare-clear-all">Очистить всё</button>{% endif %}</div>
+  {% if groups %}
+    <nav class="compare-categories" aria-label="Категории для сравнения">{% for group in groups %}<a class="category-pill {% if selected_category == group.category.slug %}active{% endif %}" href="?items={{ compare_query|urlencode }}&amp;category={{ group.category.slug }}"><span>{{ group.category.icon }}</span> {{ group.category.name }} · {{ group.products|length }}</a>{% endfor %}</nav>
+    <div class="compare-toolbar"><strong>{{ products.0.category.name }}</strong><div><label class="compare-differences"><input id="compare-only-differences" type="checkbox" {% if products|length < 2 %}disabled{% endif %}> Только различия</label><button class="text-button" type="button" id="compare-clear-category">Убрать раздел</button></div></div>
+    {% if products|length == 1 %}<p class="notice">Добавьте ещё один товар из раздела «{{ products.0.category.name }}», чтобы увидеть различия.</p>{% endif %}
+    <div class="compare-scroll" tabindex="0" aria-label="Таблица сравнения, прокручивается по горизонтали">
+      <div class="compare-table" style="--compare-columns: {{ products|length }}">
+        <div class="compare-cell compare-label compare-top-label">Товар</div>
+        {% for item in products %}<div class="compare-cell compare-product">
+          <button class="compare-remove" type="button" data-compare-remove="{{ item.slug }}" aria-label="Убрать {{ item.name }} из сравнения">×</button>
+          <a href="{% url 'product' item.slug %}" class="compare-product-image">{% with photo=item.first_image %}{% if photo %}<img src="{{ photo.thumb.url }}" alt="{{ photo.alt }}" loading="lazy">{% endif %}{% endwith %}</a>
+          <a href="{% url 'product' item.slug %}" class="compare-product-name">{{ item.name }}</a>
+          <strong class="compare-price">{{ item.price|floatformat:0 }} ₽</strong>
+          {% if item.availability == 'preorder' %}<a class="button button-outline" href="{% url 'product' item.slug %}">Под заказ ↗</a>{% else %}<button class="button button-accent add-to-cart" type="button" data-product-id="{{ item.pk }}">В корзину ↗</button>{% endif %}
+        </div>{% endfor %}
+        <div class="compare-cell compare-section-title">Характеристики</div>
+        {% for row in rows %}<div class="compare-row {% if row.different %}is-different{% endif %}"><div class="compare-cell compare-label">{{ row.label }}</div>{% for value in row.values %}<div class="compare-cell compare-value">{{ value|default:'—' }}</div>{% endfor %}</div>{% empty %}<div class="compare-no-specs">У товаров пока нет характеристик.</div>{% endfor %}
+      </div>
+    </div>
+    <p class="microcopy">На телефоне проведите по таблице в сторону, чтобы увидеть остальные товары.</p>
+  {% else %}<div class="compare-empty"><span aria-hidden="true">▣</span><h2>Здесь пока пусто</h2><p>Добавьте товары из каталога, чтобы сравнить их характеристики рядом.</p><a class="button button-dark" href="{% url 'catalog' %}#catalog">Выбрать товары ↗</a></div>{% endif %}
+  {{ compare_items|json_script:"compare-page-items" }}
+</div>
+{% endblock %}

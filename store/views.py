@@ -75,6 +75,36 @@ def product(request, slug):
     return page(request, "product", product_context(item))
 
 
+@require_GET
+def compare(request):
+    slugs = [slug for slug in request.GET.get("items", "")[:1024].split(",") if re.fullmatch(r"[a-z0-9-]{1,50}", slug)]
+    slugs = list(dict.fromkeys(slugs))[:20]
+    products = Product.objects.filter(slug__in=slugs, is_visible=True).select_related("category").prefetch_related("images")
+    by_slug = {item.slug: item for item in products}
+    groups = {}
+    for slug in slugs:
+        item = by_slug.get(slug)
+        if item:
+            group = groups.setdefault(item.category.slug, {"category": item.category, "products": []})
+            if len(group["products"]) < 4:
+                group["products"].append(item)
+    selected = request.GET.get("category", "")
+    if selected not in groups:
+        selected = next(iter(groups), "")
+    group = groups.get(selected)
+    compare_items = [{"slug": item.slug, "category": item.category.slug} for entry in groups.values() for item in entry["products"]]
+    rows = []
+    if group:
+        items = group["products"]
+        availability = [item.get_availability_display() for item in items]
+        rows.append({"label": "Наличие", "values": availability, "different": len(set(availability)) > 1})
+        labels = dict.fromkeys(key for item in items for key in (item.specs if isinstance(item.specs, dict) else {}) if isinstance(key, str))
+        for label in labels:
+            values = [str((item.specs if isinstance(item.specs, dict) else {}).get(label, "") or "").strip() for item in items]
+            rows.append({"label": label, "values": values, "different": len(set(values)) > 1})
+    return page(request, "compare", {"groups": list(groups.values()), "selected_category": selected, "products": group["products"] if group else [], "rows": rows, "compare_items": compare_items, "compare_query": ",".join(item["slug"] for item in compare_items)})
+
+
 def owner(request):
     profile = current_profile(request)
     if not profile:

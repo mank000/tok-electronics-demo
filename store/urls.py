@@ -3,6 +3,7 @@ from . import chat_views, views
 
 urlpatterns = [
     path("", views.catalog, name="catalog"),
+    path("compare/", views.compare, name="compare"),
     path("product/<slug:slug>/", views.product, name="product"),
     path("product/<slug:slug>/wish/", views.wish, name="wish"),
     path("product/<slug:slug>/review/", views.review, name="review"),

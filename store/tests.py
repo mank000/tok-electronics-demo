@@ -52,6 +52,31 @@ class ShopTests(TestCase):
         category = Category.objects.create(name="Техника", slug="tech")
         self.product = Product.objects.create(category=category, name="Товар", slug="item", description="Описание", price=Decimal("1500.00"), availability="stock")
 
+    def test_compare_groups_visible_products_and_marks_differences(self):
+        self.product.specs = {"Экран": "OLED", "Память": "128 ГБ"}
+        self.product.save(update_fields=["specs"])
+        second = Product.objects.create(category=self.product.category, name="Другой", slug="other", description="Описание", price=2000, specs={"Экран": "OLED", "Память": "256 ГБ"})
+        hidden = Product.objects.create(category=self.product.category, name="Скрытый", slug="hidden", description="Описание", price=3000, is_visible=False)
+        category = Category.objects.create(name="Аудио", slug="audio")
+        audio = Product.objects.create(category=category, name="Наушники", slug="headphones", description="Описание", price=500)
+        response = self.client.get(reverse("compare"), {"items": "item,other,hidden,headphones,other", "category": "tech"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item.slug for item in response.context["products"]], ["item", "other"])
+        self.assertEqual([(row["label"], row["different"]) for row in response.context["rows"]], [("Наличие", False), ("Экран", False), ("Память", True)])
+        self.assertEqual(response.context["compare_query"], "item,other,headphones")
+        self.assertContains(response, "Только различия")
+        self.assertNotContains(response, hidden.name)
+        audio_response = self.client.get(reverse("compare"), {"items": "item,other,headphones", "category": "audio"})
+        self.assertEqual([item.slug for item in audio_response.context["products"]], [audio.slug])
+
+    def test_compare_limits_to_four_products_per_category_and_has_empty_state(self):
+        for index in range(5):
+            Product.objects.create(category=self.product.category, name=f"Товар {index}", slug=f"item-{index}", description="Описание", price=1000)
+        response = self.client.get(reverse("compare"), {"items": "item,item-0,item-1,item-2,item-3,item-4"})
+        self.assertEqual(len(response.context["products"]), 4)
+        self.assertNotContains(response, "item-4")
+        self.assertContains(self.client.get(reverse("compare")), "Здесь пока пусто")
+
     def checkout(self, **changes):
         data = {"name": "Покупатель", "phone": "+7 900 123 45 67", "delivery": "pickup", "address": "", "comment": "", "payment_method": "online", "consent": "on", "cart": json.dumps({str(self.product.pk): 2}), "checkout_key": str(uuid.uuid4())}
         data.update(changes)
