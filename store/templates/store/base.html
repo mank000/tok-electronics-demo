@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <title>{% block title %}{{ shop_settings.name }} — {{ shop_settings.subtitle }}{% endblock %}</title>
-  <link rel="stylesheet" href="{% static 'store/style.css' %}?v=7">
+  <link rel="stylesheet" href="{% static 'store/style.css' %}?v=8">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script defer src="{% static 'store/app.js' %}?v=9"></script>
+  <script defer src="{% static 'store/app.js' %}?v=10"></script>
 </head>
 <body data-session-auth="{{ request.session.telegram_id|yesno:'true,false' }}">
   <div class="site-shell">
@@ -18,10 +18,11 @@
       </a>
       <nav class="top-nav">
         <a href="{% url 'catalog' %}">Каталог</a>
+        <a href="{% url 'compare' %}" class="compare-nav" aria-label="Сравнение товаров"><span class="compare-nav-text">Сравнение</span><span class="compare-nav-icon" aria-hidden="true">⇄</span><span id="compare-count" hidden>0</span></a>
         <a href="{% url 'account' %}">Кабинет</a>
         <a class="chat-nav" href="{% url 'chats' %}" aria-label="Чаты"><span class="chat-nav-text">Чаты</span><span class="chat-nav-icon" aria-hidden="true">✉</span></a>
         <a class="support-nav" href="{% url 'support' %}">Поддержка</a>
-        <a href="{% url 'basket' %}" class="basket-link">Корзина <span id="cart-count">0</span></a>
+        <a href="{% url 'basket' %}" class="basket-link" aria-label="Корзина"><b class="basket-link-text">Корзина</b><b class="basket-link-icon" aria-hidden="true">▣</b><span id="cart-count">0</span></a>
         <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Сменить тему">◐</button>
       </nav>
     </header>

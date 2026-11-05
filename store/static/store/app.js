@@ -39,6 +39,73 @@
   function updateCount() { document.getElementById('cart-count').textContent = Object.values(cart()).reduce((sum, n) => sum + (+n || 0), 0); }
   updateCount();
   document.querySelectorAll('.add-to-cart').forEach(button => button.addEventListener('click', () => { const value = cart(); const id = button.dataset.productId; value[id] = Math.min(20, (+value[id] || 0) + 1); saveCart(value); button.textContent = 'Добавлено ✓'; setTimeout(() => button.innerHTML = 'В корзину <span>↗</span>', 1500); }));
+  const compareKey = 'tok-compare-v1';
+  const validSlug = value => typeof value === 'string' && /^[a-z0-9-]{1,50}$/.test(value);
+  function cleanCompare(value) {
+    if (!Array.isArray(value)) return [];
+    const items = [], seen = new Set(), counts = {};
+    for (const item of value) {
+      if (!item || !validSlug(item.slug) || !validSlug(item.category) || seen.has(item.slug) || (counts[item.category] || 0) >= 4) continue;
+      items.push({slug:item.slug, category:item.category}); seen.add(item.slug); counts[item.category]=(counts[item.category] || 0)+1;
+      if (items.length === 20) break;
+    }
+    return items;
+  }
+  let compared = [];
+  try { compared = cleanCompare(JSON.parse(localStorage.getItem(compareKey) || '[]')); } catch {}
+  const compareUrl = (items, category='') => {
+    if (!items.length) return '/compare/';
+    const params = new URLSearchParams({items:items.map(item => item.slug).join(',')});
+    if (category) params.set('category', category);
+    return `/compare/?${params}`;
+  };
+  const comparePage = document.getElementById('compare-page');
+  if (comparePage) {
+    const params = new URLSearchParams(location.search);
+    if (params.has('items')) {
+      try { compared = cleanCompare(JSON.parse(document.getElementById('compare-page-items').textContent)); localStorage.setItem(compareKey, JSON.stringify(compared)); } catch {}
+    } else if (compared.length) location.replace(compareUrl(compared));
+  }
+  function syncCompare() {
+    const nav = document.querySelector('.compare-nav'), count = document.getElementById('compare-count');
+    if (nav) nav.href = compareUrl(compared);
+    if (count) { count.textContent = compared.length; count.hidden = !compared.length; }
+    for (const button of document.querySelectorAll('[data-compare-slug]')) {
+      const selected = compared.some(item => item.slug === button.dataset.compareSlug);
+      button.setAttribute('aria-pressed', String(selected)); button.textContent = selected ? '✓ В сравнении' : '⊕ Сравнить';
+    }
+    if (!comparePage) {
+      let tray = document.getElementById('compare-tray');
+      if (compared.length && !tray) { tray = document.createElement('div'); tray.id='compare-tray'; tray.className='compare-tray'; tray.setAttribute('role','status'); document.body.append(tray); }
+      if (tray) { tray.hidden = !compared.length; tray.replaceChildren(); if (compared.length) { const label=document.createElement('strong'); label.textContent=`В сравнении: ${compared.length}`; const link=document.createElement('a'); link.href=compareUrl(compared); link.textContent='Сравнить ↗'; tray.append(label,link); } }
+    }
+  }
+  function saveCompare(items) {
+    compared = cleanCompare(items);
+    try { localStorage.setItem(compareKey, JSON.stringify(compared)); } catch {}
+    syncCompare();
+  }
+  function compareNotice(message) {
+    let notice = document.getElementById('compare-notice');
+    if (!notice) { notice = document.createElement('p'); notice.id='compare-notice'; notice.className='compare-notice'; notice.setAttribute('role','status'); document.body.append(notice); }
+    notice.textContent = message; notice.hidden = false;
+    clearTimeout(compareNotice.timer); compareNotice.timer = setTimeout(() => { notice.hidden=true; }, 3500);
+  }
+  syncCompare();
+  document.querySelectorAll('[data-compare-slug]').forEach(button => button.addEventListener('click', () => {
+    const slug=button.dataset.compareSlug, category=button.dataset.compareCategory;
+    if (compared.some(item => item.slug===slug)) { saveCompare(compared.filter(item => item.slug!==slug)); return; }
+    if (compared.filter(item => item.category===category).length>=4) { compareNotice('Можно сравнить до четырёх товаров из одного раздела.'); return; }
+    saveCompare([...compared,{slug,category}]);
+  }));
+  if (comparePage) {
+    const selectedCategory = comparePage.dataset.category;
+    document.querySelectorAll('[data-compare-remove]').forEach(button => button.addEventListener('click', () => { const items=compared.filter(item => item.slug!==button.dataset.compareRemove); saveCompare(items); location.assign(compareUrl(items, selectedCategory)); }));
+    document.getElementById('compare-clear-category')?.addEventListener('click', () => { const items=compared.filter(item => item.category!==selectedCategory); saveCompare(items); location.assign(compareUrl(items)); });
+    document.getElementById('compare-clear-all')?.addEventListener('click', () => { saveCompare([]); location.assign('/compare/?items='); });
+    document.getElementById('compare-only-differences')?.addEventListener('change', event => { comparePage.classList.toggle('compare-differences-only', event.target.checked); });
+  }
+  window.addEventListener('storage', event => { if (event.key===compareKey) { try { compared=cleanCompare(JSON.parse(event.newValue || '[]')); } catch { compared=[]; } syncCompare(); } });
   document.querySelectorAll('.gallery-thumb').forEach(button => button.addEventListener('click', () => { const current = document.getElementById('gallery-current'); current.src = button.dataset.image; current.alt = button.dataset.alt; document.querySelectorAll('.gallery-thumb').forEach(x => x.classList.remove('active')); button.classList.add('active'); }));
   const csrf = document.cookie.split('; ').find(x => x.startsWith('csrftoken='))?.split('=')[1];
   async function quote() {
