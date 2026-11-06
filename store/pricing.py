@@ -12,7 +12,7 @@ def normalize_coupon(value):
     return value.strip().upper()
 
 
-def cart_totals(cart, code=""):
+def cart_totals(cart, code="", lock=False):
     now = timezone.now()
     lines = cart_lines(cart)
     priced = [(product, quantity, product.price_at(now)) for product, quantity in lines]
