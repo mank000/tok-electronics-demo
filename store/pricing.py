@@ -14,7 +14,7 @@ def normalize_coupon(value):
 
 def cart_totals(cart, code="", lock=False):
     now = timezone.now()
-    lines = cart_lines(cart, lock=lock)
+    lines = cart_lines(cart)
     priced = [(product, quantity, product.price_at(now)) for product, quantity in lines]
     subtotal = sum((product.price * quantity for product, quantity, _ in priced), Decimal(0))
     sale_total = sum((price * quantity for _, quantity, price in priced), Decimal(0))
