@@ -14,6 +14,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_POST, require_http_methods
+from .catalog_filters import facet_groups, matches_facets, price_bound, selected_facets
 from .forms import CheckoutForm, QuestionForm, ReturnForm, ReviewForm
 from .integrations import get_runtime_config, yookassa_configured
 from .models import BotUser, Category, CustomerProfile, Favorite, Order, OrderItem, PaymentAttempt, Product, ProductCollection, ProductQuestion, ProductReview, RecentlyViewed, ReturnRequest, Wish
@@ -39,11 +40,38 @@ def catalog(request):
     products = Product.objects.filter(is_visible=True).select_related("category").prefetch_related("images")
     if category:
         products = products.filter(category__slug=category)
+    products = list(products)
+    groups = facet_groups(products) if category else []
+    selected = selected_facets(request.GET.getlist("spec"), groups)
+    for group in groups:
+        for option in group["options"]:
+            option["selected"] = option["value"] in selected.get(group["name"], set())
+    availability = set(request.GET.getlist("availability")) & set(Product.Availability.values)
+    price_from = request.GET.get("price_from", "")[:20]
+    price_to = request.GET.get("price_to", "")[:20]
+    filter_error = ""
+    try:
+        min_price, max_price = price_bound(price_from), price_bound(price_to)
+        if min_price is not None and max_price is not None and min_price > max_price:
+            raise ValueError("Цена «от» больше цены «до»")
+    except ValueError as exc:
+        min_price = max_price = None
+        filter_error = str(exc)
+    sale_only = request.GET.get("sale") == "1"
     if search:
-        products = products.filter(name__icontains=search)
+        products = [item for item in products if search.casefold() in item.name.casefold()]
+    products = [item for item in products if (not availability or item.availability in availability)
+                and (not sale_only or item.has_discount)
+                and (min_price is None or item.current_price >= min_price)
+                and (max_price is None or item.current_price <= max_price)
+                and matches_facets(item, selected)]
     if sort in ("price", "-price"):
         products = sorted(products, key=lambda item: (item.current_price if sort == "price" else -item.current_price, item.pk))
-    return page(request, "catalog", {"categories": Category.objects.all(), "products": products, "active_category": category, "query": search, "sort": sort, "featured": Product.objects.filter(is_visible=True, is_featured=True).prefetch_related("images")[:4], "collections": ProductCollection.objects.filter(is_visible=True).prefetch_related("products__images")[:3]})
+    return page(request, "catalog", {"categories": Category.objects.all(), "products": products, "active_category": category, "query": search, "sort": sort,
+        "availability_options": [{"value": value, "label": label, "selected": value in availability} for value, label in Product.Availability.choices],
+        "facet_groups": groups, "price_from": price_from, "price_to": price_to, "sale_only": sale_only, "filter_error": filter_error,
+        "filters_active": bool(availability or price_from or price_to or sale_only or selected),
+        "featured": Product.objects.filter(is_visible=True, is_featured=True).prefetch_related("images")[:4], "collections": ProductCollection.objects.filter(is_visible=True).prefetch_related("products__images")[:3]})
 
 
 def product_context(item, **extra):
