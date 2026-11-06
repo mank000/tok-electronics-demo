@@ -89,7 +89,7 @@ def message_data(message, viewer_id):
             "name": message.product_name,
             "url": reverse("product", args=[product.slug]) if product else "",
             "image": image.thumb.url if image else "",
-            "price": str(product.price) if product else "",
+            "price": str(product.current_price) if product else "",
         } if message.product_name else None,
     }
 

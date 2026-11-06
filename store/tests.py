@@ -21,7 +21,7 @@ from django.urls import reverse
 from django.utils import timezone
 from .integrations import encrypt_secret, get_runtime_config
 from .analytics import dashboard_data, month_at
-from .models import BotUser, BrowserLoginCode, Category, ChatConversation, ChatMessage, CustomerProfile, Favorite, IntegrationSettings, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductImage, ProductQuestion, ProductReview, RecentlyViewed, ReturnRequest, ShopSettings, SupportMessage, SupportTicket, Wish
+from .models import BotUser, BrowserLoginCode, Category, ChatConversation, ChatMessage, Coupon, CustomerProfile, Favorite, IntegrationSettings, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductImage, ProductQuestion, ProductReview, RecentlyViewed, ReturnRequest, ShopSettings, SupportMessage, SupportTicket, Wish
 from .phone_login import normalize_phone
 from .security import TelegramAuthError, verify_init_data
 from .services import flush_notifications, process_payment_event, queue_buyer, queue_order_changed, queue_shop, retry_buyer_notifications, signed_event
@@ -102,6 +102,58 @@ class ShopTests(TestCase):
         self.assertEqual(order.total, Decimal("3500.00"))
         self.assertEqual(order.items.get().unit_price, Decimal("1750.00"))
         self.assertEqual(order.payment_state, "pending")
+
+    def test_scheduled_product_discount_is_recalculated_and_saved(self):
+        now = timezone.now()
+        self.product.discount_percent = 25
+        self.product.discount_starts_at = now - timedelta(hours=1)
+        self.product.discount_ends_at = now + timedelta(hours=1)
+        self.product.save()
+        quote = self.client.post(reverse("cart_quote"), json.dumps({"cart": {str(self.product.pk): 2}}), content_type="application/json").json()
+        self.assertEqual((quote["subtotal"], quote["product_discount"], quote["total"]), ("3000.00", "750.00", "2250.00"))
+        self.assertEqual(quote["items"][0]["price"], "1125.00")
+        self.checkout(total="1")
+        order = Order.objects.get()
+        self.assertEqual((order.subtotal, order.product_discount, order.total), (Decimal("3000"), Decimal("750"), Decimal("2250")))
+        self.assertEqual((order.items.get().list_unit_price, order.items.get().unit_price), (Decimal("1500"), Decimal("1125")))
+        self.product.discount_ends_at = now - timedelta(seconds=1)
+        self.product.save(update_fields=["discount_ends_at"])
+        self.assertEqual(self.product.current_price, Decimal("1500"))
+
+    def test_catalog_price_sort_uses_active_discount(self):
+        cheaper = Product.objects.create(category=self.product.category, name="Со скидкой", slug="sale", description="Описание", price=2000, discount_percent=50)
+        response = self.client.get(reverse("catalog"), {"sort": "price"})
+        self.assertEqual([item.pk for item in response.context["products"]], [cheaper.pk, self.product.pk])
+
+    def test_coupon_stack_limit_and_idempotent_checkout(self):
+        self.product.discount_percent = 20
+        self.product.save(update_fields=["discount_percent"])
+        coupon = Coupon.objects.create(code="save10", kind="percent", value=10, min_total=2000, max_uses=1)
+        quote = self.client.post(reverse("cart_quote"), json.dumps({"cart": {str(self.product.pk): 2}, "coupon_code": "save10"}), content_type="application/json").json()
+        self.assertEqual((quote["product_discount"], quote["coupon_discount"], quote["total"]), ("600.00", "240.00", "2160.00"))
+        key = str(uuid.uuid4())
+        self.assertEqual(self.checkout(checkout_key=key, coupon_code="save10").status_code, 302)
+        self.assertEqual(self.checkout(checkout_key=key, coupon_code="save10").status_code, 302)
+        order = Order.objects.get()
+        self.assertEqual((order.subtotal, order.product_discount, order.coupon_discount, order.total, order.coupon_code), (Decimal("3000"), Decimal("600"), Decimal("240"), Decimal("2160"), "SAVE10"))
+        coupon.refresh_from_db()
+        self.assertEqual(coupon.uses, 1)
+        self.assertEqual(self.checkout(coupon_code="save10").status_code, 400)
+        self.assertEqual(Order.objects.count(), 1)
+
+    def test_coupon_fixed_amount_minimum_and_expiry(self):
+        coupon = Coupon.objects.create(code="fixed", kind="fixed", value=5000, min_total=3000)
+        data = {"cart": {str(self.product.pk): 2}, "coupon_code": "fixed"}
+        quote = self.client.post(reverse("cart_quote"), json.dumps(data), content_type="application/json").json()
+        self.assertEqual((quote["coupon_discount"], quote["total"]), ("2999.00", "1.00"))
+        coupon.min_total = 3001
+        coupon.save(update_fields=["min_total"])
+        self.assertEqual(self.client.post(reverse("cart_quote"), json.dumps(data), content_type="application/json").status_code, 400)
+        coupon.min_total = 0
+        coupon.ends_at = timezone.now() - timedelta(seconds=1)
+        coupon.save(update_fields=["min_total", "ends_at"])
+        self.assertEqual(self.checkout(coupon_code="fixed").status_code, 400)
+        self.assertEqual(Order.objects.count(), 0)
 
     def test_checkout_invalid_telegram_denied(self):
         response = self.checkout(tg_init_data=telegram_data().replace("123", "999"))
@@ -418,7 +470,7 @@ class ShopTests(TestCase):
             url = reverse("admin:store_product_change", args=[self.product.pk])
             response = self.client.post(url, {
                 "category": self.product.category_id, "name": self.product.name, "slug": self.product.slug,
-                "description": "Обновлённое описание", "specs": "{}", "price": "1500.00", "availability": "stock",
+                "description": "Обновлённое описание", "specs": "{}", "price": "1500.00", "discount_percent": "0", "availability": "stock",
                 "is_visible": "on", "images-TOTAL_FORMS": "1", "images-INITIAL_FORMS": "0",
                 "images-MIN_NUM_FORMS": "0", "images-MAX_NUM_FORMS": "1000",
                 "images-0-image": image_upload("camera.jpg", "JPEG", (1500, 1000)),

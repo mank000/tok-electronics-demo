@@ -15,7 +15,7 @@
           <button class="compare-remove" type="button" data-compare-remove="{{ item.slug }}" aria-label="Убрать {{ item.name }} из сравнения">×</button>
           <a href="{% url 'product' item.slug %}" class="compare-product-image">{% with photo=item.first_image %}{% if photo %}<img src="{{ photo.thumb.url }}" alt="{{ photo.alt }}" loading="lazy">{% endif %}{% endwith %}</a>
           <a href="{% url 'product' item.slug %}" class="compare-product-name">{{ item.name }}</a>
-          <strong class="compare-price">{{ item.price|floatformat:0 }} ₽</strong>
+          <strong class="compare-price">{{ item.current_price|floatformat:0 }} ₽</strong>{% if item.has_discount %}<del class="old-price">{{ item.price|floatformat:0 }} ₽</del>{% endif %}
           {% if item.availability == 'preorder' %}<a class="button button-outline" href="{% url 'product' item.slug %}">Под заказ ↗</a>{% else %}<button class="button button-accent add-to-cart" type="button" data-product-id="{{ item.pk }}">В корзину ↗</button>{% endif %}
         </div>{% endfor %}
         <div class="compare-cell compare-section-title">Характеристики</div>

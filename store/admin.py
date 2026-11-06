@@ -11,7 +11,7 @@ from django.utils.html import format_html
 from django.views.decorators.debug import sensitive_post_parameters
 from .analytics import dashboard_data
 from .integrations import encrypt_secret
-from .models import BotUser, Category, CustomerProfile, Favorite, IntegrationSettings, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductCollection, ProductImage, ProductQuestion, ProductReview, ReturnRequest, ShopAnalytics, ShopSettings, SupportMessage, SupportTicket, Wish
+from .models import BotUser, Category, Coupon, CustomerProfile, Favorite, IntegrationSettings, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductCollection, ProductImage, ProductQuestion, ProductReview, ReturnRequest, ShopAnalytics, ShopSettings, SupportMessage, SupportTicket, Wish
 from .services import queue_buyer, queue_order_changed, queue_telegram
 from .support import reply_to_ticket
 
@@ -222,14 +222,14 @@ class ProductImageInline(admin.StackedInline):
 
 @admin.register(Product)
 class ProductAdmin(ResponsiveAdmin):
-    list_display = ("name", "category", "price", "availability", "is_visible", "is_featured", "wish_count")
+    list_display = ("name", "category", "price", "discount_percent", "current_price", "availability", "is_visible", "is_featured", "wish_count")
     list_filter = ("category", "availability", "is_visible", "is_featured")
     list_editable = ("price", "availability", "is_visible")
     search_fields = ("name", "slug", "description")
     prepopulated_fields = {"slug": ("name",)}
     inlines = (ProductImageInline,)
     filter_horizontal = ("accessories",)
-    fieldsets = ((None, {"fields": ("category", "name", "slug", "description", "specs", "price", "availability", "is_visible", "is_featured")}), ("Доставка и дополнения", {"fields": ("delivery_min_days", "delivery_max_days", "accessories")}))
+    fieldsets = ((None, {"fields": ("category", "name", "slug", "description", "specs", "price", "availability", "is_visible", "is_featured")}), ("Скидка по расписанию", {"fields": ("discount_percent", "discount_starts_at", "discount_ends_at")}), ("Доставка и дополнения", {"fields": ("delivery_min_days", "delivery_max_days", "accessories")}))
 
     def get_queryset(self, request):
         return super().get_queryset(request).annotate(_wish_count=Count("wishes"))
@@ -239,19 +239,28 @@ class ProductAdmin(ResponsiveAdmin):
         return obj._wish_count
 
 
+@admin.register(Coupon)
+class CouponAdmin(ResponsiveAdmin):
+    list_display = ("code", "kind", "value", "min_total", "starts_at", "ends_at", "uses", "max_uses", "is_active")
+    list_filter = ("kind", "is_active")
+    search_fields = ("code",)
+    readonly_fields = ("uses",)
+    fieldsets = ((None, {"fields": ("code", "kind", "value", "min_total", "is_active")}), ("Срок и лимиты", {"fields": ("starts_at", "ends_at", "max_uses", "uses")}))
+
+
 class OrderItemInline(admin.TabularInline):
     model = OrderItem
     extra = 0
-    readonly_fields = ("product", "title", "quantity", "unit_price")
+    readonly_fields = ("product", "title", "quantity", "list_unit_price", "unit_price")
     can_delete = False
 
 
 @admin.register(Order)
 class OrderAdmin(ResponsiveAdmin):
-    list_display = ("id", "is_demo", "created_at", "name", "phone", "total", "delivery", "payment_state", "status", "track_number")
+    list_display = ("id", "is_demo", "created_at", "name", "phone", "coupon_code", "total", "delivery", "payment_state", "status", "track_number")
     list_filter = ("is_demo", "status", "payment_state", "delivery", "created_at")
     search_fields = ("=id", "name", "phone", "track_number")
-    readonly_fields = ("access_token", "checkout_key", "telegram_id", "name", "phone", "delivery", "address", "comment", "payment_method", "payment_gateway", "total", "payment_state", "created_at", "updated_at")
+    readonly_fields = ("access_token", "checkout_key", "telegram_id", "name", "phone", "delivery", "address", "comment", "payment_method", "payment_gateway", "subtotal", "product_discount", "coupon_discount", "coupon_code", "coupon", "total", "payment_state", "created_at", "updated_at")
     inlines = (OrderItemInline,)
 
     def save_model(self, request, obj, form, change):

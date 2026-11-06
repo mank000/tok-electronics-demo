@@ -15,6 +15,7 @@ class CheckoutForm(forms.Form):
     comment = forms.CharField(required=False, max_length=1000, widget=forms.Textarea(attrs={"rows": 2}), label="Комментарий")
     payment_method = forms.ChoiceField(choices=Order.Payment.choices, label="Оплата")
     payment_gateway = forms.ChoiceField(choices=[("demo", "Демооплата"), ("yookassa", "ЮKassa (тестовый магазин)")], label="Платёжный шлюз", required=False)
+    coupon_code = forms.CharField(max_length=32, required=False, label="Промокод")
     consent = forms.BooleanField(label="Согласие на обработку данных и условия оферты")
     cart = forms.CharField(widget=forms.HiddenInput)
     checkout_key = forms.UUIDField(widget=forms.HiddenInput)
@@ -30,6 +31,9 @@ class CheckoutForm(forms.Form):
             return json.loads(self.cleaned_data["cart"])
         except (ValueError, TypeError) as exc:
             raise forms.ValidationError("Корзина повреждена") from exc
+
+    def clean_coupon_code(self):
+        return self.cleaned_data["coupon_code"].strip().upper()
 
     def clean(self):
         data = super().clean()

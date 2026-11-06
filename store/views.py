@@ -2,7 +2,6 @@ import json
 import re
 import uuid
 from datetime import timedelta
-from decimal import Decimal
 from django.conf import settings
 from django.middleware.csrf import get_token
 from django.db import IntegrityError, transaction
@@ -19,9 +18,10 @@ from .forms import CheckoutForm, QuestionForm, ReturnForm, ReviewForm
 from .integrations import get_runtime_config, yookassa_configured
 from .models import BotUser, Category, CustomerProfile, Favorite, Order, OrderItem, PaymentAttempt, Product, ProductCollection, ProductQuestion, ProductReview, RecentlyViewed, ReturnRequest, Wish
 from .phone_login import issue_code, normalize_phone, verify_code
+from .pricing import cart_totals
 from .security import TelegramAuthError, current_profile, telegram_id_from_request, verified_init_profile
 from .telegram_login import complete_login, configured as telegram_login_configured, start_login
-from .services import PaymentError, cart_lines, process_payment_event, queue_buyer, queue_order_created, queue_shop, signed_event
+from .services import PaymentError, process_payment_event, queue_buyer, queue_order_created, queue_shop, signed_event
 
 
 def page(request, name, context=None, status=200):
@@ -42,7 +42,7 @@ def catalog(request):
     if search:
         products = products.filter(name__icontains=search)
     if sort in ("price", "-price"):
-        products = products.order_by(sort, "id")
+        products = sorted(products, key=lambda item: (item.current_price if sort == "price" else -item.current_price, item.pk))
     return page(request, "catalog", {"categories": Category.objects.all(), "products": products, "active_category": category, "query": search, "sort": sort, "featured": Product.objects.filter(is_visible=True, is_featured=True).prefetch_related("images")[:4], "collections": ProductCollection.objects.filter(is_visible=True).prefetch_related("products__images")[:3]})
 
 
@@ -229,12 +229,12 @@ def cart_quote(request):
     try:
         telegram_id_from_request(request)
         payload = json.loads(request.body)
-        lines = cart_lines(payload.get("cart"))
+        totals = cart_totals(payload.get("cart"), payload.get("coupon_code", ""))
     except TelegramAuthError:
         return HttpResponseForbidden("Проверка Telegram не пройдена")
     except (ValueError, TypeError) as exc:
         return JsonResponse({"error": str(exc)}, status=400)
-    return JsonResponse({"items": [{"id": p.pk, "name": p.name, "quantity": q, "price": str(p.price), "subtotal": str(p.price * q), "url": reverse("product", args=[p.slug]), "image": p.first_image.thumb.url if p.first_image else ""} for p, q in lines], "total": str(sum((p.price * q for p, q in lines), Decimal(0)))})
+    return JsonResponse({"items": [{"id": p.pk, "name": p.name, "quantity": q, "list_price": str(p.price), "price": str(price), "subtotal": str(price * q), "url": reverse("product", args=[p.slug]), "image": p.first_image.thumb.url if p.first_image else ""} for p, q, price in totals["lines"]], "subtotal": str(totals["subtotal"]), "product_discount": str(totals["product_discount"]), "coupon_discount": str(totals["coupon_discount"]), "coupon_code": totals["coupon"].code if totals["coupon"] else "", "total": str(totals["total"])})
 
 
 def my_contact(request):
@@ -294,10 +294,14 @@ def checkout(request):
     data = form.cleaned_data
     try:
         with transaction.atomic():
-            lines = cart_lines(data["cart"], lock=True)
+            totals = cart_totals(data["cart"], data["coupon_code"], lock=True)
             gateway = data["payment_gateway"] if data["payment_method"] == "online" else "receipt"
-            order = Order.objects.create(checkout_key=key, telegram_id=tg_id, name=profile["name"] if profile else data["name"].strip(), phone=data["phone"], delivery=data["delivery"], address=data["address"].strip(), comment=data["comment"].strip(), payment_method=data["payment_method"], payment_gateway=gateway, total=sum((p.price * q for p, q in lines), Decimal(0)), payment_state="receipt" if data["payment_method"] == "receipt" else "pending")
-            OrderItem.objects.bulk_create([OrderItem(order=order, product=p, title=p.name, quantity=q, unit_price=p.price) for p, q in lines])
+            coupon = totals["coupon"]
+            order = Order.objects.create(checkout_key=key, telegram_id=tg_id, name=profile["name"] if profile else data["name"].strip(), phone=data["phone"], delivery=data["delivery"], address=data["address"].strip(), comment=data["comment"].strip(), payment_method=data["payment_method"], payment_gateway=gateway, subtotal=totals["subtotal"], product_discount=totals["product_discount"], coupon_discount=totals["coupon_discount"], coupon_code=coupon.code if coupon else "", coupon=coupon, total=totals["total"], payment_state="receipt" if data["payment_method"] == "receipt" else "pending")
+            OrderItem.objects.bulk_create([OrderItem(order=order, product=p, title=p.name, quantity=q, unit_price=price, list_unit_price=p.price) for p, q, price in totals["lines"]])
+            if coupon:
+                coupon.uses += 1
+                coupon.save(update_fields=["uses"])
             if order.payment_method == "online":
                 PaymentAttempt.objects.create(order=order, gateway=gateway)
             queue_order_created(order)
@@ -515,9 +519,9 @@ def account_data(request):
         "profile": {"name": profile["name"]},
         "current": [order_data(o) for o in orders if o.status not in (Order.Status.DELIVERED, Order.Status.CANCELLED)],
         "purchases": [order_data(o) for o in orders if o.status == Order.Status.DELIVERED],
-        "favorites": [{"name": f.product.name, "url": reverse("product", args=[f.product.slug]), "price": str(f.product.price)} for f in favorites],
+        "favorites": [{"name": f.product.name, "url": reverse("product", args=[f.product.slug]), "price": str(f.product.current_price)} for f in favorites],
         "wishes": [{"name": w.product.name, "url": reverse("product", args=[w.product.slug]), "created": w.created_at.strftime("%d.%m.%Y")} for w in wishes.select_related("product").order_by("-created_at")],
-        "recent": [{"name": v.product.name, "url": reverse("product", args=[v.product.slug]), "price": str(v.product.price), "image": v.product.first_image.thumb.url if v.product.first_image else ""} for v in recent],
+        "recent": [{"name": v.product.name, "url": reverse("product", args=[v.product.slug]), "price": str(v.product.current_price), "image": v.product.first_image.thumb.url if v.product.first_image else ""} for v in recent],
     })
 
 

@@ -108,8 +108,8 @@
   window.addEventListener('storage', event => { if (event.key===compareKey) { try { compared=cleanCompare(JSON.parse(event.newValue || '[]')); } catch { compared=[]; } syncCompare(); } });
   document.querySelectorAll('.gallery-thumb').forEach(button => button.addEventListener('click', () => { const current = document.getElementById('gallery-current'); current.src = button.dataset.image; current.alt = button.dataset.alt; document.querySelectorAll('.gallery-thumb').forEach(x => x.classList.remove('active')); button.classList.add('active'); }));
   const csrf = document.cookie.split('; ').find(x => x.startsWith('csrftoken='))?.split('=')[1];
-  async function quote() {
-    const response = await fetch('/api/cart/quote/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':decodeURIComponent(csrf || ''), ...(tg?.initData ? {'X-Telegram-Init-Data':tg.initData} : {})}, body:JSON.stringify({cart:cart()})});
+  async function quote(promoCode='') {
+    const response = await fetch('/api/cart/quote/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':decodeURIComponent(csrf || ''), ...(tg?.initData ? {'X-Telegram-Init-Data':tg.initData} : {})}, body:JSON.stringify({cart:cart(), coupon_code:promoCode})});
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Не удалось проверить корзину');
     return data;
@@ -124,7 +124,7 @@
       for (const item of data.items) {
         const row = document.createElement('div'); row.className='basket-row';
         const photo = document.createElement('img'); photo.src=item.image; photo.alt=item.name; row.append(photo);
-        const description=document.createElement('div'); const title=document.createElement('h3'); title.textContent=item.name; const small=document.createElement('small'); small.textContent=money(item.price); description.append(title,small); row.append(description);
+        const description=document.createElement('div'); const title=document.createElement('h3'); title.textContent=item.name; const small=document.createElement('small'); small.textContent=money(item.price); description.append(title,small); if(+item.list_price>+item.price){const old=document.createElement('del');old.className='old-price';old.textContent=money(item.list_price);description.append(old);} row.append(description);
         const control=document.createElement('div'); control.className='qty-control'; const minus=document.createElement('button'); minus.type='button'; minus.textContent='−'; const number=document.createElement('span'); number.textContent=item.quantity; const plus=document.createElement('button'); plus.type='button'; plus.textContent='+'; control.append(minus,number,plus); row.append(control);
         const remove=document.createElement('button'); remove.type='button'; remove.className='remove'; remove.textContent='×'; remove.setAttribute('aria-label',`Убрать ${item.name}`); row.append(remove);
         const change=(n)=>{const value=cart(); if(n<=0) delete value[item.id]; else value[item.id]=Math.min(20,n); saveCart(value); renderBasket();};
@@ -142,7 +142,21 @@
     const updateDelivery=()=>{document.getElementById('address-field').hidden=delivery.value==='pickup'; const receipt=payment.querySelector('option[value="receipt"]'); receipt.disabled=delivery.value==='region'; if(receipt.disabled && payment.value==='receipt') payment.value='online'; document.getElementById('gateway-field').hidden=payment.value!=='online';};
     delivery.addEventListener('change',updateDelivery); payment.addEventListener('change',updateDelivery); updateDelivery();
     checkoutForm.elements.cart.value=JSON.stringify(cart());
-    quote().then(data=>{const box=document.getElementById('checkout-summary'); box.replaceChildren(); for(const item of data.items){const row=document.createElement('div'); row.className='summary-row'; const label=document.createElement('span'); label.textContent=`${item.name} × ${item.quantity}`; const price=document.createElement('strong'); price.textContent=money(item.subtotal); row.append(label,price); box.append(row);} document.getElementById('checkout-total').textContent=money(data.total);}).catch(error=>{document.getElementById('checkout-summary').textContent=error.message; checkoutForm.querySelector('.submit-order').disabled=true;});
+    const summaryRow=(box,label,value)=>{const row=document.createElement('div');row.className='summary-row';const name=document.createElement('span');name.textContent=label;const amount=document.createElement('strong');amount.textContent=value;row.append(name,amount);box.append(row);};
+    const renderCheckout=async()=>{
+      const note=document.getElementById('coupon-message'), button=checkoutForm.querySelector('.submit-order');
+      try {
+        const data=await quote(checkoutForm.elements.coupon_code.value);
+        const box=document.getElementById('checkout-summary'), discounts=document.getElementById('checkout-discounts');box.replaceChildren();discounts.replaceChildren();
+        for(const item of data.items)summaryRow(box,`${item.name} × ${item.quantity}`,money(item.subtotal));
+        if(+data.product_discount)summaryRow(discounts,'Скидка на товары',`−${money(data.product_discount)}`);
+        if(+data.coupon_discount)summaryRow(discounts,`Промокод ${data.coupon_code}`,`−${money(data.coupon_discount)}`);
+        document.getElementById('checkout-total').textContent=money(data.total);note.textContent=data.coupon_code?'Промокод применён.':' ';button.disabled=false;
+      } catch(error) {note.textContent=error.message;button.disabled=true;}
+    };
+    renderCheckout();
+    document.getElementById('apply-coupon')?.addEventListener('click',renderCheckout);
+    checkoutForm.elements.coupon_code.addEventListener('input',()=>{document.getElementById('coupon-message').textContent='Нажмите «Применить», чтобы пересчитать сумму.';});
     checkoutForm.addEventListener('submit',()=>{checkoutForm.elements.cart.value=JSON.stringify(cart()); checkoutForm.querySelector('.submit-order').disabled=true;});
     const contact=document.getElementById('request-contact');
     if(tg?.initData) fetch('/api/me/contact/',{headers:{'X-Telegram-Init-Data':tg.initData}}).then(r=>r.ok?r.json():null).then(data=>{if(data?.phone&&!checkoutForm.elements.phone.value)checkoutForm.elements.phone.value=data.phone;}).catch(()=>{});
