@@ -1,3 +1,4 @@
+from django.core.cache import cache
 import re
 
 from django import forms
@@ -299,13 +300,18 @@ class ShopAnalyticsAdmin(ResponsiveAdmin):
             months = int(request.GET.get("months", 12))
         except (TypeError, ValueError):
             months = 12
+        cache_key = f"admin-analytics:{months}"
+        metrics = cache.get(cache_key)
+        if metrics is None:
+            metrics = dashboard_data(months)
+            cache.set(cache_key, metrics, 30)
         request.current_app = self.admin_site.name
         context = {
             **self.admin_site.each_context(request),
             "title": "Аналитика магазина",
             "opts": self.model._meta,
             "app_label": self.model._meta.app_label,
-            **dashboard_data(months),
+            **metrics,
             **(extra_context or {}),
         }
         return TemplateResponse(request, self.change_list_template, context)
