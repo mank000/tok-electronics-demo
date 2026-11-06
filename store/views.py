@@ -562,21 +562,25 @@ def account_data(request):
         return HttpResponseForbidden("Проверка Telegram не пройдена")
     if not profile:
         return JsonResponse({"error": "Войдите через Telegram"}, status=401)
-    orders = Order.objects.filter(telegram_id=profile["id"], is_demo=False)
+    orders = Order.objects.filter(telegram_id=profile["id"], is_demo=False).order_by("-created_at", "-pk")
     wishes = Wish.objects.filter(telegram_id=profile["id"])
     def item_data(item):
         return {"name": item.title, "quantity": item.quantity, "id": item.pk}
     def order_data(order):
         return {"id": order.pk, "url": reverse("order", args=[order.access_token]), "status": order.get_status_display(), "status_code": order.status, "total": str(order.total), "created": order.created_at.strftime("%d.%m.%Y"), "items": [item_data(item) for item in order.items.all()]}
-    orders = list(orders.prefetch_related("items"))
-    favorites = Favorite.objects.filter(telegram_id=profile["id"], product__is_visible=True).select_related("product").order_by("-created_at")
+    current_page = Paginator(orders.exclude(status__in=(Order.Status.DELIVERED, Order.Status.CANCELLED)).prefetch_related("items"), 20).get_page(request.GET.get("page"))
+    purchases_page = Paginator(orders.filter(status=Order.Status.DELIVERED).prefetch_related("items"), 20).get_page(request.GET.get("page"))
+    favorites = Favorite.objects.filter(telegram_id=profile["id"], product__is_visible=True).select_related("product").order_by("-created_at", "-pk")
     recent = RecentlyViewed.objects.filter(telegram_id=profile["id"], product__is_visible=True).select_related("product").prefetch_related("product__images")[:12]
+    favorites_page = Paginator(favorites, 20).get_page(request.GET.get("page"))
+    wishes_page = Paginator(wishes.select_related("product").order_by("-created_at", "-pk"), 20).get_page(request.GET.get("page"))
     return JsonResponse({
+        "pagination": {name: {"number": p.number, "pages": p.paginator.num_pages, "previous": p.previous_page_number() if p.has_previous() else None, "next": p.next_page_number() if p.has_next() else None} for name, p in (("current", current_page), ("purchases", purchases_page), ("favorites", favorites_page), ("wishes", wishes_page))},
         "profile": {"name": profile["name"]},
-        "current": [order_data(o) for o in orders if o.status not in (Order.Status.DELIVERED, Order.Status.CANCELLED)],
-        "purchases": [order_data(o) for o in orders if o.status == Order.Status.DELIVERED],
-        "favorites": [{"name": f.product.name, "url": reverse("product", args=[f.product.slug]), "price": str(f.product.current_price)} for f in favorites],
-        "wishes": [{"name": w.product.name, "url": reverse("product", args=[w.product.slug]), "created": w.created_at.strftime("%d.%m.%Y")} for w in wishes.select_related("product").order_by("-created_at")],
+        "current": [order_data(o) for o in current_page],
+        "purchases": [order_data(o) for o in purchases_page],
+        "favorites": [{"name": f.product.name, "url": reverse("product", args=[f.product.slug]), "price": str(f.product.current_price)} for f in favorites_page],
+        "wishes": [{"name": w.product.name, "url": reverse("product", args=[w.product.slug]), "created": w.created_at.strftime("%d.%m.%Y")} for w in wishes_page],
         "recent": [{"name": v.product.name, "url": reverse("product", args=[v.product.slug]), "price": str(v.product.current_price), "image": v.product.first_image.thumb.url if v.product.first_image else ""} for v in recent],
     })
 
