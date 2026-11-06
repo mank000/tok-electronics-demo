@@ -9,9 +9,9 @@
   <meta name="robots" content="{{ robots_directive|default:'noindex,nofollow' }}">
   {% if canonical_url %}<link rel="canonical" href="{{ canonical_url }}"><meta property="og:type" content="{{ og_type|default:'website' }}"><meta property="og:title" content="{{ seo_title }}"><meta property="og:description" content="{{ seo_description }}"><meta property="og:url" content="{{ canonical_url }}">{% if og_image %}<meta property="og:image" content="{{ og_image }}">{% endif %}{% endif %}
   {% if product_schema %}<script type="application/ld+json">{{ product_schema|safe }}</script>{% endif %}
-  <link rel="stylesheet" href="{% static 'store/style.css' %}?v=10">
+  <link rel="stylesheet" href="{% static 'store/style.css' %}?v=11">
   <script defer src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script defer src="{% static 'store/app.js' %}?v=12"></script>
+  <script defer src="{% static 'store/app.js' %}?v=13"></script>
 </head>
 <body data-session-auth="{{ request.session.telegram_id|yesno:'true,false' }}">
   <div class="site-shell">

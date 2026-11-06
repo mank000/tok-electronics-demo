@@ -15,11 +15,11 @@
         <fieldset><legend>Акции</legend><label class="filter-option"><input type="checkbox" name="sale" value="1" {% if sale_only %}checked{% endif %}> Только со скидкой</label></fieldset>
         {% for group in facet_groups %}<fieldset><legend>{{ group.name }}</legend><div class="facet-options">{% for option in group.options %}<label class="filter-option"><input type="checkbox" name="spec" value="{{ option.token }}" {% if option.selected %}checked{% endif %}> {{ option.value }}</label>{% endfor %}</div></fieldset>{% endfor %}
       </div>
-      {% if filter_error %}<p class="notice notice-error">{{ filter_error }}</p>{% endif %}
+      <div class="catalog-filter-error" role="alert">{% if filter_error %}<p class="notice notice-error">{{ filter_error }}</p>{% endif %}</div>
       <div class="filter-actions"><button class="button button-accent" type="submit">Показать товары</button><a class="text-button" href="{% url 'catalog' %}{% if active_category %}?category={{ active_category }}{% endif %}#catalog">Сбросить</a></div>
     </details>
   </form>
-  <p class="catalog-result-count">Найдено: {{ products|length }}</p>
-  <div class="product-grid">{% for item in products %}{% include 'store/card.html' with item=item %}{% empty %}<p class="empty-state">По этим условиям ничего не найдено. Попробуйте изменить фильтры.</p>{% endfor %}</div>
+  <p class="catalog-result-count" role="status" aria-live="polite" aria-atomic="true">Найдено: {{ products|length }}</p>
+  <div class="product-grid catalog-results">{% for item in products %}{% include 'store/card.html' with item=item %}{% empty %}<p class="empty-state">По этим условиям ничего не найдено. Попробуйте изменить фильтры.</p>{% endfor %}</div>
 </section>
 {% endblock %}
