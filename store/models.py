@@ -1,10 +1,12 @@
 import secrets
+import re
 import uuid
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from django.core.exceptions import ValidationError
-from django.core.validators import RegexValidator
+from django.core.validators import MaxValueValidator, MinValueValidator, RegexValidator
 from django.db import models
 from django.db.models import F, Q
+from django.db.models.functions import Lower
 from django.utils import timezone
 from .images import open_raster, webp_content
 
@@ -92,7 +94,10 @@ class Product(models.Model):
     slug = models.SlugField("Адрес", unique=True)
     description = models.TextField("Описание")
     specs = models.JSONField("Характеристики", default=dict, blank=True, help_text='Например: {"Экран": "6.1 дюйма"}')
-    price = models.DecimalField("Цена, ₽", max_digits=10, decimal_places=2)
+    price = models.DecimalField("Цена, ₽", max_digits=10, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
+    discount_percent = models.PositiveSmallIntegerField("Скидка, %", default=0, validators=[MaxValueValidator(90)])
+    discount_starts_at = models.DateTimeField("Скидка с", null=True, blank=True)
+    discount_ends_at = models.DateTimeField("Скидка до", null=True, blank=True)
     availability = models.CharField("Наличие", max_length=12, choices=Availability.choices, default=Availability.IN_STOCK)
     is_visible = models.BooleanField("Показывать покупателям", default=True)
     is_featured = models.BooleanField("В подборке", default=False)
@@ -112,6 +117,67 @@ class Product(models.Model):
     @property
     def first_image(self):
         return self.images.first()
+
+    def clean(self):
+        super().clean()
+        if self.discount_starts_at and self.discount_ends_at and self.discount_ends_at <= self.discount_starts_at:
+            raise ValidationError({"discount_ends_at": "Окончание скидки должно быть позже начала."})
+
+    def has_discount_at(self, now):
+        return bool(self.discount_percent and (not self.discount_starts_at or self.discount_starts_at <= now) and (not self.discount_ends_at or now < self.discount_ends_at))
+
+    @property
+    def has_discount(self):
+        return self.has_discount_at(timezone.now())
+
+    def price_at(self, now):
+        if not self.has_discount_at(now):
+            return self.price
+        return (self.price * (Decimal(100 - self.discount_percent) / 100)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    @property
+    def current_price(self):
+        return self.price_at(timezone.now())
+
+
+class Coupon(models.Model):
+    class Kind(models.TextChoices):
+        PERCENT = "percent", "Процент"
+        FIXED = "fixed", "Сумма в рублях"
+
+    code = models.CharField("Промокод", max_length=32)
+    kind = models.CharField("Тип скидки", max_length=8, choices=Kind.choices)
+    value = models.DecimalField("Размер скидки", max_digits=10, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
+    min_total = models.DecimalField("Минимальная сумма товаров, ₽", max_digits=11, decimal_places=2, default=0, validators=[MinValueValidator(0)])
+    starts_at = models.DateTimeField("Действует с", null=True, blank=True)
+    ends_at = models.DateTimeField("Действует до", null=True, blank=True)
+    max_uses = models.PositiveIntegerField("Максимум применений (0 — без лимита)", default=0)
+    uses = models.PositiveIntegerField("Применений", default=0, editable=False)
+    is_active = models.BooleanField("Включён", default=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(Lower("code"), name="unique_coupon_code_ci")]
+        verbose_name = "Промокод"
+        verbose_name_plural = "Промокоды"
+
+    def __str__(self):
+        return self.code
+
+    def clean(self):
+        super().clean()
+        self.code = self.code.strip().upper()
+        if not self.code or not re.fullmatch(r"[A-Z0-9_-]{3,32}", self.code):
+            raise ValidationError({"code": "От 3 до 32 латинских букв, цифр, _ или -."})
+        if Coupon.objects.filter(code__iexact=self.code).exclude(pk=self.pk).exists():
+            raise ValidationError({"code": "Такой промокод уже существует."})
+        if self.kind == self.Kind.PERCENT and self.value > 90:
+            raise ValidationError({"value": "Процент скидки не может быть больше 90."})
+        if self.starts_at and self.ends_at and self.ends_at <= self.starts_at:
+            raise ValidationError({"ends_at": "Окончание должно быть позже начала."})
+
+    def save(self, *args, **kwargs):
+        self.code = self.code.strip().upper()
+        super().save(*args, **kwargs)
 
 
 class ProductImage(models.Model):
@@ -276,6 +342,11 @@ class Order(models.Model):
     comment = models.TextField("Комментарий", blank=True)
     payment_method = models.CharField("Способ оплаты", max_length=12, choices=Payment.choices)
     payment_gateway = models.CharField("Платёжный шлюз", max_length=12, choices=[("demo", "Демооплата"), ("yookassa", "ЮKassa"), ("receipt", "При получении")], default="demo")
+    subtotal = models.DecimalField("Стоимость без скидок, ₽", max_digits=11, decimal_places=2, default=0)
+    product_discount = models.DecimalField("Скидка на товары, ₽", max_digits=11, decimal_places=2, default=0)
+    coupon_discount = models.DecimalField("Скидка по промокоду, ₽", max_digits=11, decimal_places=2, default=0)
+    coupon_code = models.CharField("Применённый промокод", max_length=32, blank=True)
+    coupon = models.ForeignKey(Coupon, on_delete=models.PROTECT, null=True, blank=True, related_name="orders")
     total = models.DecimalField("Итог, ₽", max_digits=11, decimal_places=2)
     status = models.CharField("Статус", max_length=12, choices=Status.choices, default=Status.NEW)
     payment_state = models.CharField("Состояние оплаты", max_length=12, choices=[("pending", "Ожидается"), ("paid", "Успешно"), ("declined", "Отказ"), ("receipt", "При получении")], default="pending")
@@ -306,6 +377,7 @@ class OrderItem(models.Model):
     title = models.CharField("Название при покупке", max_length=160)
     quantity = models.PositiveSmallIntegerField("Количество")
     unit_price = models.DecimalField("Цена при покупке", max_digits=10, decimal_places=2)
+    list_unit_price = models.DecimalField("Цена до скидки", max_digits=10, decimal_places=2, default=0)
 
     class Meta:
         verbose_name = "Позиция заказа"
