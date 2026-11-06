@@ -73,6 +73,7 @@ def sitemap_xml(request):
     paths = [reverse("catalog")]
     paths += [reverse("catalog") + "?" + urlencode({"category": slug}) for slug in Category.objects.filter(products__is_visible=True).values_list("slug", flat=True).distinct()]
     paths += [reverse("product", args=[slug]) for slug in Product.objects.filter(is_visible=True).values_list("slug", flat=True)]
+    origin = site_origin(request)
     for path in paths:
-        ElementTree.SubElement(ElementTree.SubElement(root, "url"), "loc").text = public_url(request, path)
+        ElementTree.SubElement(ElementTree.SubElement(root, "url"), "loc").text = origin + path
     return HttpResponse(ElementTree.tostring(root, encoding="utf-8", xml_declaration=True), content_type="application/xml; charset=utf-8")

@@ -150,6 +150,7 @@
         }
         catalogSection.querySelector('.catalog-result-count').textContent = nextCount.textContent;
         catalogSection.querySelector('.catalog-results').replaceWith(nextResults);
+        catalogSection.querySelector('.catalog-pagination').replaceWith(nextCatalog.querySelector('.catalog-pagination'));
         document.title = next.title;
         for (const selector of ['meta[name="description"]', 'meta[name="robots"]', 'link[rel="canonical"]', 'meta[property="og:title"]', 'meta[property="og:description"]', 'meta[property="og:url"]']) {
           const oldTag = document.head.querySelector(selector), newTag = next.head.querySelector(selector);
@@ -183,7 +184,7 @@
       inputTimer = setTimeout(() => { if (event.target.reportValidity()) updateCatalog(formUrl()); }, 350);
     });
     catalogSection.addEventListener('click', event => {
-      const link = event.target.closest('.category-list a, .filter-actions a');
+      const link = event.target.closest('.category-list a, .filter-actions a, .catalog-pagination a');
       if (!link || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
       event.preventDefault();
       updateCatalog(link.href, true);

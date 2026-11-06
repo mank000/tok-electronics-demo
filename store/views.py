@@ -2,10 +2,17 @@ import json
 import re
 import uuid
 from datetime import timedelta
+from decimal import Decimal
 from django.conf import settings
 from django.middleware.csrf import get_token
 from django.db import IntegrityError, transaction
-from django.db.models import Avg
+from django.core.paginator import Paginator
+from django.db.models import Avg, Case, When, F, Q, Value, DecimalField, Prefetch
+from django.db.models.functions import Round, Cast, Trim
+from django.db.models.fields.json import KeyTextTransform
+from django.db.models import CharField
+from types import SimpleNamespace
+from django.core.cache import cache
 from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseForbidden, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -14,7 +21,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_POST, require_http_methods
-from .catalog_filters import facet_groups, matches_facets, price_bound, selected_facets
+from .catalog_filters import facet_groups, price_bound, selected_facets
 from .forms import CheckoutForm, QuestionForm, ReturnForm, ReviewForm
 from .integrations import get_runtime_config, yookassa_configured
 from .models import BotUser, Category, CustomerProfile, Favorite, Order, OrderItem, PaymentAttempt, Product, ProductCollection, ProductQuestion, ProductReview, RecentlyViewed, ReturnRequest, Wish
@@ -42,8 +49,18 @@ def catalog(request):
     products = Product.objects.filter(is_visible=True).select_related("category").prefetch_related("images")
     if category:
         products = products.filter(category__slug=category)
-    products = list(products)
-    groups = facet_groups(products) if category else []
+    groups = []
+    if category:
+        cache_key = f"catalog-facets:{category_obj.pk}" if category_obj else "catalog-facets:missing"
+        groups = cache.get(cache_key)
+        if groups is None:
+            groups = facet_groups(SimpleNamespace(specs=specs) for specs in products.prefetch_related(None).values_list("specs", flat=True).iterator(chunk_size=1000))
+            cache.set(cache_key, groups, 60)
+    now = timezone.now()
+    active_discount = Q(discount_percent__gt=0) & (Q(discount_starts_at__isnull=True) | Q(discount_starts_at__lte=now)) & (Q(discount_ends_at__isnull=True) | Q(discount_ends_at__gt=now))
+    products = products.annotate(effective_price=Case(
+        When(active_discount, then=Round(F("price") * (Value(100) - F("discount_percent")) / Value(Decimal("100.0")), 2)),
+        default=F("price"), output_field=DecimalField(max_digits=10, decimal_places=2)))
     selected = selected_facets(request.GET.getlist("spec"), groups)
     for group in groups:
         for option in group["options"]:
@@ -61,19 +78,27 @@ def catalog(request):
         filter_error = str(exc)
     sale_only = request.GET.get("sale") == "1"
     if search:
-        products = [item for item in products if search.casefold() in item.name.casefold()]
-    products = [item for item in products if (not availability or item.availability in availability)
-                and (not sale_only or item.has_discount)
-                and (min_price is None or item.current_price >= min_price)
-                and (max_price is None or item.current_price <= max_price)
-                and matches_facets(item, selected)]
-    if sort in ("price", "-price"):
-        products = sorted(products, key=lambda item: (item.current_price if sort == "price" else -item.current_price, item.pk))
-    return page(request, "catalog", {"categories": Category.objects.all(), "products": products, "active_category": category, "query": search, "sort": sort,
+        products = products.filter(name__icontains=search)
+    if availability:
+        products = products.filter(availability__in=availability)
+    if sale_only:
+        products = products.filter(active_discount)
+    if min_price is not None:
+        products = products.filter(effective_price__gte=min_price)
+    if max_price is not None:
+        products = products.filter(effective_price__lte=max_price)
+    for index, (key, values) in enumerate(selected.items()):
+        alias = f"facet_{index}"
+        products = products.annotate(**{alias: Trim(Cast(KeyTextTransform(key, "specs"), CharField()))}).filter(**{f"{alias}__in": values})
+    products = products.order_by("-effective_price" if sort == "-price" else "effective_price", "pk") if sort in ("price", "-price") else products
+    product_page = Paginator(products, 24).get_page(request.GET.get("page"))
+    params = request.GET.copy()
+    params.pop("page", None)
+    return page(request, "catalog", {"categories": Category.objects.all(), "products": product_page, "product_page": product_page, "pagination_query": params.urlencode(), "active_category": category, "query": search, "sort": sort,
         "availability_options": [{"value": value, "label": label, "selected": value in availability} for value, label in Product.Availability.choices],
         "facet_groups": groups, "price_from": price_from, "price_to": price_to, "sale_only": sale_only, "filter_error": filter_error,
         "filters_active": bool(availability or price_from or price_to or sale_only or selected),
-        "featured": Product.objects.filter(is_visible=True, is_featured=True).prefetch_related("images")[:4], "collections": ProductCollection.objects.filter(is_visible=True).prefetch_related("products__images")[:3],
+        "featured": Product.objects.filter(is_visible=True, is_featured=True).select_related("category").prefetch_related("images")[:4], "collections": ProductCollection.objects.filter(is_visible=True).prefetch_related(Prefetch("products", queryset=Product.objects.filter(is_visible=True).select_related("category").prefetch_related("images").order_by("pk")[:8], to_attr="display_products"))[:3],
         **catalog_metadata(request, category_obj)})
 
 
@@ -252,7 +277,7 @@ def record_view(request, slug):
 
 @ensure_csrf_cookie
 def basket(request):
-    return page(request, "basket", {"products": Product.objects.filter(is_visible=True).exclude(availability="preorder").prefetch_related("images")})
+    return page(request, "basket")
 
 
 @require_POST

@@ -2,6 +2,9 @@ import secrets
 import re
 import uuid
 from decimal import Decimal, ROUND_HALF_UP
+from django.core.cache import cache
+from django.db.models.signals import post_save, post_delete
+from django.dispatch import receiver
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator, RegexValidator
 from django.db import models
@@ -531,3 +534,12 @@ class RecentlyViewed(models.Model):
         ordering = ["-viewed_at"]
         verbose_name = "Просмотренный товар"
         verbose_name_plural = "Просмотренные товары"
+
+
+# Facets contain public product attributes only; expire across processes within 60s.
+
+
+@receiver(post_save, sender=Product)
+@receiver(post_delete, sender=Product)
+def invalidate_product_facets(sender, instance, **kwargs):
+    cache.delete(f"catalog-facets:{instance.category_id}")
