@@ -339,6 +339,9 @@ class ShopTests(TestCase):
         updates = {"ok": True, "result": [{"update_id": 1, "message": {"text": "/start", "from": {"id": 123}, "chat": {"id": 123, "type": "private"}}}]}
         with patch("requests.get", side_effect=[Mock(json=lambda: updates), KeyboardInterrupt]), patch("requests.post", return_value=Mock(status_code=200, json=lambda: {"ok": True})) as send:
             call_command("runbot")
+            notification.refresh_from_db()
+            self.assertEqual(notification.status, "pending")
+            flush_notifications()
         notification.refresh_from_db()
         self.assertEqual(notification.status, "sent")
         self.assertTrue(BotUser.objects.filter(telegram_id=123, chat_id=123).exists())

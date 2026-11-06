@@ -144,12 +144,19 @@ def flush_notifications(limit=20):
         Notification.objects.filter(kind="shop", status="pending").update(status="internal")
     if not config.bot_token:
         return
-    pending = Notification.objects.filter(status="pending")
-    for notification in pending.order_by("created_at")[:limit]:
-        try:
-            send_notification(notification, config)
-        except Exception as exc:
-            notification.attempts += 1
-            notification.status = "failed" if isinstance(exc, MissingChatError) or notification.attempts >= 3 else "pending"
-            notification.last_error = str(exc).replace(config.bot_token, "[redacted]")[:500]
-            notification.save(update_fields=["status", "attempts", "last_error"])
+    attempted_ids = set()
+    for _ in range(limit):
+        with transaction.atomic():
+            notification = (Notification.objects.select_for_update(skip_locked=True)
+                            .filter(status="pending").exclude(pk__in=attempted_ids)
+                            .order_by("created_at", "pk").first())
+            if notification is None:
+                break
+            attempted_ids.add(notification.pk)
+            try:
+                send_notification(notification, config)
+            except Exception as exc:
+                notification.attempts += 1
+                notification.status = "failed" if isinstance(exc, MissingChatError) or notification.attempts >= 3 else "pending"
+                notification.last_error = str(exc).replace(config.bot_token, "[redacted]")[:500]
+                notification.save(update_fields=["status", "attempts", "last_error"])

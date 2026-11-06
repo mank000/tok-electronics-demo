@@ -63,6 +63,19 @@ services:
       web:
         condition: service_healthy
 
+  notifications:
+    build: .
+    restart: unless-stopped
+    env_file: .env.prod
+    environment:
+      DATABASE_URL_HOST: db
+      DJANGO_PRODUCTION: "1"
+      DJANGO_DEBUG: "0"
+    command: python manage.py runnotifications
+    depends_on:
+      web:
+        condition: service_healthy
+
   bot:
     build: .
     restart: unless-stopped

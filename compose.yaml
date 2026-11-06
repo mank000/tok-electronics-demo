@@ -24,6 +24,17 @@ services:
     depends_on:
       db:
         condition: service_healthy
+  notifications:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL_HOST: db
+    command: python manage.py runnotifications
+    depends_on:
+      web:
+        condition: service_started
+
   bot:
     build: .
     env_file: .env
