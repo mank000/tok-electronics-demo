@@ -6,7 +6,7 @@ import uuid
 from datetime import timedelta
 
 from django.db import IntegrityError, transaction
-from django.db.models import Q
+from django.db.models import Q, OuterRef, Subquery, Count, F, Case, When, IntegerField
 from django.http import HttpResponseForbidden, JsonResponse
 from django.shortcuts import get_object_or_404
 from django.urls import reverse
@@ -99,17 +99,19 @@ def api_chats(request):
     customer, denied = identity(request)
     if denied is not None:
         return denied
-    conversations = ChatConversation.objects.filter(Q(left=customer) | Q(right=customer)).select_related("left", "right")[:100]
+    conversations = ChatConversation.objects.filter(Q(left=customer) | Q(right=customer)).select_related("left", "right").annotate(
+        last_text=Subquery(ChatMessage.objects.filter(conversation=OuterRef("pk")).order_by("-id").values("text")[:1]),
+        last_product=Subquery(ChatMessage.objects.filter(conversation=OuterRef("pk")).order_by("-id").values("product_name")[:1]),
+        read_cursor=Case(When(left=customer, then=F("left_read_message_id")), default=F("right_read_message_id")),
+    ).annotate(unread_count=Count("messages", filter=~Q(messages__sender=customer) & Q(messages__id__gt=F("read_cursor"))))[:100]
     rows = []
     for conversation in conversations:
         peer = peer_of(conversation, customer)
-        last = conversation.messages.order_by("-id").first()
-        read_id = conversation.left_read_message_id if conversation.left_id == customer.pk else conversation.right_read_message_id
-        unread = conversation.messages.filter(sender=peer, id__gt=read_id).count()
+        unread = conversation.unread_count
         rows.append({
             "id": conversation.pk, "url": reverse("chat_conversation", args=[conversation.pk]),
             "peer": {"name": peer.name, "tag": peer.chat_tag or ""},
-            "preview": (last.text or last.product_name)[:100] if last else "Начните переписку",
+            "preview": (conversation.last_text or conversation.last_product or "Начните переписку")[:100],
             "unread": unread,
         })
     return JsonResponse({"name": customer.name, "tag": customer.chat_tag or "", "conversations": rows})
