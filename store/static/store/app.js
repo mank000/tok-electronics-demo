@@ -114,7 +114,7 @@
     if (!response.ok) throw new Error(data.error || 'Не удалось проверить корзину');
     return data;
   }
-  const money = value => `${Math.round(+value).toLocaleString('ru-RU')} ₽`;
+  const money = value => { const amount=Number(value); return `${amount.toLocaleString('ru-RU',{minimumFractionDigits:Number.isInteger(amount)?0:2,maximumFractionDigits:2})} ₽`; };
   const basketBox = document.getElementById('basket-content');
   async function renderBasket() {
     if (!basketBox) return;
