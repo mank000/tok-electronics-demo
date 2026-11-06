@@ -120,6 +120,17 @@ class ShopTests(TestCase):
         self.product.save(update_fields=["discount_ends_at"])
         self.assertEqual(self.product.current_price, Decimal("1500"))
 
+    def test_discount_with_kopeks_is_displayed_exactly(self):
+        self.product.price = Decimal("1501.00")
+        self.product.discount_percent = 15
+        self.product.save(update_fields=["price", "discount_percent"])
+        self.assertEqual(self.product.current_price, Decimal("1275.85"))
+        self.assertContains(self.client.get(reverse("product", args=[self.product.slug])), "1\xa0275,85 ₽")
+        self.assertEqual(self.checkout().status_code, 302)
+        order = Order.objects.get()
+        self.assertEqual(order.total, Decimal("2551.70"))
+        self.assertContains(self.client.get(reverse("order", args=[order.access_token])), "2\xa0551,70 ₽")
+
     def test_catalog_price_sort_uses_active_discount(self):
         cheaper = Product.objects.create(category=self.product.category, name="Со скидкой", slug="sale", description="Описание", price=2000, discount_percent=50)
         response = self.client.get(reverse("catalog"), {"sort": "price"})

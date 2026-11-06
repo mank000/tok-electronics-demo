@@ -11,7 +11,7 @@
   {% if product_schema %}<script type="application/ld+json">{{ product_schema|safe }}</script>{% endif %}
   <link rel="stylesheet" href="{% static 'store/style.css' %}?v=10">
   <script defer src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script defer src="{% static 'store/app.js' %}?v=11"></script>
+  <script defer src="{% static 'store/app.js' %}?v=12"></script>
 </head>
 <body data-session-auth="{{ request.session.telegram_id|yesno:'true,false' }}">
   <div class="site-shell">
