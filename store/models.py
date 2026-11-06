@@ -282,6 +282,7 @@ class ChatConversation(models.Model):
 
     class Meta:
         ordering = ["-updated_at"]
+        indexes = [models.Index(fields=["left", "-updated_at"], name="chat_left_updated"), models.Index(fields=["right", "-updated_at"], name="chat_right_updated")]
         constraints = [
             models.UniqueConstraint(fields=["left", "right"], name="unique_chat_pair"),
             models.CheckConstraint(condition=Q(left_id__lt=F("right_id")), name="ordered_chat_pair"),
@@ -301,6 +302,7 @@ class ChatMessage(models.Model):
 
     class Meta:
         ordering = ["id"]
+        indexes = [models.Index(fields=["conversation", "id"], name="chat_conversation_id"), models.Index(fields=["sender", "created_at"], name="chat_sender_created")]
         constraints = [models.CheckConstraint(condition=~Q(text="") | ~Q(product_name=""), name="chat_message_has_content")]
         verbose_name = "Сообщение покупателей"
         verbose_name_plural = "Сообщения покупателей"
@@ -360,6 +362,7 @@ class Order(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [models.Index(fields=["is_demo", "created_at"], name="order_demo_created"), models.Index(fields=["telegram_id", "-created_at"], name="order_customer_created")]
         verbose_name = "Заказ"
         verbose_name_plural = "Заказы"
 
@@ -395,7 +398,7 @@ class Wish(models.Model):
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="wishes", verbose_name="Товар")
     name = models.CharField("Имя", max_length=100)
     contact = models.CharField("Телефон или Telegram", max_length=120)
-    telegram_id = models.BigIntegerField("Telegram ID", null=True, blank=True)
+    telegram_id = models.BigIntegerField("Telegram ID", null=True, blank=True, db_index=True)
     browser_session = models.CharField("Сессия браузера", max_length=40, blank=True, db_index=True)
     created_at = models.DateTimeField("Создана", auto_now_add=True)
 
@@ -433,6 +436,7 @@ class Notification(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [models.Index(fields=["status", "created_at"], name="notification_pending")]
         verbose_name = "Уведомление"
         verbose_name_plural = "Уведомления"
 
