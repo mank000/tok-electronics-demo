@@ -8,7 +8,7 @@ from .integrations import get_runtime_config
 from .models import BotUser, Notification, Order, PaymentAttempt, PaymentEvent, Product
 
 
-def cart_lines(cart, lock=False):
+def cart_lines(cart):
     if not isinstance(cart, dict) or not cart or len(cart) > 50:
         raise ValueError("Корзина пуста или слишком велика")
     ids = []
@@ -23,7 +23,7 @@ def cart_lines(cart, lock=False):
         ids.append(pk)
         quantities[pk] = quantity
     products_query = Product.objects.filter(pk__in=ids, is_visible=True).exclude(availability="preorder")
-    products = list(products_query.select_for_update() if lock else products_query)
+    products = list(products_query.prefetch_related("images"))
     if len(products) != len(ids):
         raise ValueError("Один из товаров недоступен")
     return [(p, quantities[p.pk]) for p in products]

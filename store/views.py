@@ -350,7 +350,7 @@ def checkout(request):
     data = form.cleaned_data
     try:
         with transaction.atomic():
-            totals = cart_totals(data["cart"], data["coupon_code"], lock=True)
+            totals = cart_totals(data["cart"], data["coupon_code"])
             gateway = data["payment_gateway"] if data["payment_method"] == "online" else "receipt"
             coupon = totals["coupon"]
             order = Order.objects.create(checkout_key=key, telegram_id=tg_id, name=profile["name"] if profile else data["name"].strip(), phone=data["phone"], delivery=data["delivery"], address=data["address"].strip(), comment=data["comment"].strip(), payment_method=data["payment_method"], payment_gateway=gateway, subtotal=totals["subtotal"], product_discount=totals["product_discount"], coupon_discount=totals["coupon_discount"], coupon_code=coupon.code if coupon else "", coupon=coupon, total=totals["total"], payment_state="receipt" if data["payment_method"] == "receipt" else "pending")
