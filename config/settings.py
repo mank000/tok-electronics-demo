@@ -6,6 +6,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "unsafe-local-only")
 DEBUG = os.environ.get("DJANGO_DEBUG", "0") == "1"
 PRODUCTION = os.environ.get("DJANGO_PRODUCTION", "0") == "1"
+SEO_INDEXABLE = PRODUCTION and os.environ.get("DJANGO_SEO_INDEXABLE", "0") == "1"
 ALLOWED_HOSTS = [x.strip() for x in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if x.strip()]
 CSRF_TRUSTED_ORIGINS = [x.strip() for x in os.environ.get("DJANGO_CSRF_TRUSTED_ORIGINS", "").split(",") if x.strip()]
 DEMO_NULL_ORIGIN_HOSTS = [x.strip() for x in os.environ.get("DJANGO_DEMO_NULL_ORIGIN_HOSTS", "localhost,127.0.0.1").split(",") if x.strip()]
