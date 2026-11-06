@@ -4,7 +4,7 @@ from django.core.management.base import BaseCommand
 from store.integrations import get_runtime_config
 from store.models import BotUser, ShopSettings, SupportTicket
 from store.phone_login import normalize_phone
-from store.services import flush_notifications, retry_buyer_notifications
+from store.services import retry_buyer_notifications
 from store.support import active_ticket, open_ticket, receive_message
 
 
@@ -42,7 +42,6 @@ class Command(BaseCommand):
                     active_token = config.bot_token
                     self.stdout.write("Бот запущен")
                 api = f"https://api.telegram.org/bot{config.bot_token}/"
-                flush_notifications()
                 result = requests.get(api + "getUpdates", params={"timeout": 20, "offset": offset, "allowed_updates": '["message"]'}, timeout=30).json()
                 if not result.get("ok"):
                     raise RuntimeError(result.get("description", "Telegram API error"))
