@@ -92,12 +92,14 @@
     clearTimeout(compareNotice.timer); compareNotice.timer = setTimeout(() => { notice.hidden=true; }, 3500);
   }
   syncCompare();
-  document.querySelectorAll('[data-compare-slug]').forEach(button => button.addEventListener('click', () => {
+  document.addEventListener('click', event => {
+    const button = event.target.closest('[data-compare-slug]');
+    if (!button) return;
     const slug=button.dataset.compareSlug, category=button.dataset.compareCategory;
     if (compared.some(item => item.slug===slug)) { saveCompare(compared.filter(item => item.slug!==slug)); return; }
     if (compared.filter(item => item.category===category).length>=4) { compareNotice('Можно сравнить до четырёх товаров из одного раздела.'); return; }
     saveCompare([...compared,{slug,category}]);
-  }));
+  });
   if (comparePage) {
     const selectedCategory = comparePage.dataset.category;
     document.querySelectorAll('[data-compare-remove]').forEach(button => button.addEventListener('click', () => { const items=compared.filter(item => item.slug!==button.dataset.compareRemove); saveCompare(items); location.assign(compareUrl(items, selectedCategory)); }));
@@ -106,6 +108,88 @@
     document.getElementById('compare-only-differences')?.addEventListener('change', event => { comparePage.classList.toggle('compare-differences-only', event.target.checked); });
   }
   window.addEventListener('storage', event => { if (event.key===compareKey) { try { compared=cleanCompare(JSON.parse(event.newValue || '[]')); } catch { compared=[]; } syncCompare(); } });
+  const catalogSection = document.getElementById('catalog');
+  if (catalogSection) {
+    let pendingRequest;
+    let inputTimer;
+    let currentCategory = new URL(location.href).searchParams.get('category') || '';
+    const formUrl = () => {
+      const form = catalogSection.querySelector('.catalog-filter-form');
+      const url = new URL(form.action, location.href);
+      const params = new URLSearchParams(new FormData(form));
+      for (const [key, value] of [...params]) if (!value.trim()) params.delete(key);
+      url.search = params.toString();
+      return url;
+    };
+    async function updateCatalog(url, replaceForm = false, fromHistory = false) {
+      clearTimeout(inputTimer);
+      const target = new URL(url, location.href);
+      if (target.origin !== location.origin || target.pathname !== location.pathname) { location.assign(target.href); return; }
+      pendingRequest?.abort();
+      const request = new AbortController();
+      pendingRequest = request;
+      catalogSection.querySelector('.catalog-results').setAttribute('aria-busy', 'true');
+      try {
+        const response = await fetch(target.href, {signal: request.signal});
+        if (!response.ok) throw new Error('Не удалось обновить каталог');
+        const next = new DOMParser().parseFromString(await response.text(), 'text/html');
+        const nextCatalog = next.getElementById('catalog');
+        const nextResults = nextCatalog?.querySelector('.catalog-results');
+        const nextCount = nextCatalog?.querySelector('.catalog-result-count');
+        if (!nextResults || !nextCount) throw new Error('Не удалось прочитать каталог');
+        const nextCategory = target.searchParams.get('category') || '';
+        if (replaceForm || nextCategory !== currentCategory) {
+          const wasOpen = catalogSection.querySelector('.catalog-filters').open;
+          catalogSection.querySelector('.category-list').replaceWith(nextCatalog.querySelector('.category-list'));
+          const nextForm = nextCatalog.querySelector('.catalog-filter-form');
+          nextForm.querySelector('.catalog-filters').open = wasOpen || nextForm.querySelector('.catalog-filters').open;
+          catalogSection.querySelector('.catalog-filter-form').replaceWith(nextForm);
+        } else {
+          catalogSection.querySelector('.catalog-filters summary').innerHTML = nextCatalog.querySelector('.catalog-filters summary').innerHTML;
+          catalogSection.querySelector('.catalog-filter-error').innerHTML = nextCatalog.querySelector('.catalog-filter-error').innerHTML;
+        }
+        catalogSection.querySelector('.catalog-result-count').textContent = nextCount.textContent;
+        catalogSection.querySelector('.catalog-results').replaceWith(nextResults);
+        document.title = next.title;
+        for (const selector of ['meta[name="description"]', 'meta[name="robots"]', 'link[rel="canonical"]', 'meta[property="og:title"]', 'meta[property="og:description"]', 'meta[property="og:url"]']) {
+          const oldTag = document.head.querySelector(selector), newTag = next.head.querySelector(selector);
+          if (oldTag && newTag) oldTag.replaceWith(newTag);
+          else if (oldTag) oldTag.remove();
+          else if (newTag) document.head.append(newTag);
+        }
+        currentCategory = nextCategory;
+        syncCompare();
+        if (!fromHistory && target.href !== location.href) history.pushState(null, '', target.href);
+      } catch (error) {
+        if (error.name !== 'AbortError') location.assign(target.href);
+      } finally {
+        if (pendingRequest === request) {
+          pendingRequest = null;
+          catalogSection.querySelector('.catalog-results').removeAttribute('aria-busy');
+        }
+      }
+    }
+    catalogSection.addEventListener('submit', event => {
+      if (!event.target.matches('.catalog-filter-form')) return;
+      event.preventDefault();
+      updateCatalog(formUrl());
+    });
+    catalogSection.addEventListener('change', event => {
+      if (event.target.closest('.catalog-filter-form')) updateCatalog(formUrl());
+    });
+    catalogSection.addEventListener('input', event => {
+      if (!event.target.matches('input[name="q"], input[name="price_from"], input[name="price_to"]')) return;
+      clearTimeout(inputTimer);
+      inputTimer = setTimeout(() => { if (event.target.reportValidity()) updateCatalog(formUrl()); }, 350);
+    });
+    catalogSection.addEventListener('click', event => {
+      const link = event.target.closest('.category-list a, .filter-actions a');
+      if (!link || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+      event.preventDefault();
+      updateCatalog(link.href, true);
+    });
+    window.addEventListener('popstate', () => updateCatalog(location.href, true, true));
+  }
   document.querySelectorAll('.gallery-thumb').forEach(button => button.addEventListener('click', () => { const current = document.getElementById('gallery-current'); current.src = button.dataset.image; current.alt = button.dataset.alt; document.querySelectorAll('.gallery-thumb').forEach(x => x.classList.remove('active')); button.classList.add('active'); }));
   const csrf = document.cookie.split('; ').find(x => x.startsWith('csrftoken='))?.split('=')[1];
   async function quote(promoCode='') {
