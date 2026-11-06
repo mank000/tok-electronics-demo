@@ -125,6 +125,24 @@ class ShopTests(TestCase):
         response = self.client.get(reverse("catalog"), {"sort": "price"})
         self.assertEqual([item.pk for item in response.context["products"]], [cheaper.pk, self.product.pk])
 
+    def test_catalog_filters_price_availability_sale_and_specs(self):
+        self.product.specs = {"Экран": "OLED", "Память": "128 ГБ"}
+        self.product.discount_percent = 20
+        self.product.save(update_fields=["specs", "discount_percent"])
+        second = Product.objects.create(category=self.product.category, name="Вторая модель", slug="second", description="Описание", price=2000, availability="transit", specs={"Экран": "OLED", "Память": "256 ГБ"})
+        third = Product.objects.create(category=self.product.category, name="Третья модель", slug="third", description="Описание", price=1000, availability="stock", specs={"Экран": "IPS", "Память": "128 ГБ"})
+        Product.objects.create(category=self.product.category, name="Скрытый", slug="hidden-filter", description="Описание", price=100, is_visible=False, specs={"Экран": "AMOLED"})
+        oled = json.dumps(["Экран", "OLED"], ensure_ascii=False)
+        response = self.client.get(reverse("catalog"), {"category": "tech", "price_to": "1600", "sale": "1", "availability": "stock", "spec": oled})
+        self.assertEqual([item.pk for item in response.context["products"]], [self.product.pk])
+        self.assertNotIn("AMOLED", str(response.context["facet_groups"]))
+        response = self.client.get(reverse("catalog"), {"category": "tech", "spec": [oled, json.dumps(["Память", "256 ГБ"], ensure_ascii=False)]})
+        self.assertEqual([item.pk for item in response.context["products"]], [second.pk])
+        response = self.client.get(reverse("catalog"), {"category": "tech", "spec": [oled, json.dumps(["Экран", "IPS"], ensure_ascii=False)]})
+        self.assertEqual({item.pk for item in response.context["products"]}, {self.product.pk, second.pk, third.pk})
+        response = self.client.get(reverse("catalog"), {"category": "tech", "price_from": "abc"})
+        self.assertContains(response, "Укажите цену числом")
+
     def test_coupon_stack_limit_and_idempotent_checkout(self):
         self.product.discount_percent = 20
         self.product.save(update_fields=["discount_percent"])
