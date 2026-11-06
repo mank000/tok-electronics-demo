@@ -240,14 +240,20 @@
       } catch (error) { notice(error.message, true); }
       finally { button.disabled = false; }
     });
-    setInterval(async () => {
-      if (view.hidden || document.hidden) return;
+    let polling = false;
+    let pollDelay = 5000;
+    async function poll() {
+      if (view.hidden || document.hidden || polling) { setTimeout(poll, pollDelay); return; }
+      polling = true;
       try {
         const data = await api(`${endpoint}${newest ? `?after=${newest}` : ''}`);
         applyBlock(data);
         append(data.messages);
-      } catch { /* Try again on the next poll. */ }
-    }, 5000);
+        pollDelay = data.messages.length ? 5000 : Math.min(pollDelay * 1.5, 30000);
+      } catch { pollDelay = Math.min(pollDelay * 2, 60000); }
+      finally { polling = false; setTimeout(poll, pollDelay); }
+    }
+    setTimeout(poll, pollDelay);
   }
 
   if (conversationId) setupConversation();
