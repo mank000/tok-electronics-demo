@@ -143,6 +143,35 @@ class ShopTests(TestCase):
         response = self.client.get(reverse("catalog"), {"category": "tech", "price_from": "abc"})
         self.assertContains(response, "Укажите цену числом")
 
+    def test_demo_store_is_not_indexable(self):
+        self.assertContains(self.client.get(reverse("robots_txt")), "Disallow: /")
+        self.assertEqual(self.client.get(reverse("sitemap_xml")).status_code, 404)
+        self.assertContains(self.client.get(reverse("product", args=[self.product.slug])), 'name="robots" content="noindex,follow"')
+        self.assertContains(self.client.get(reverse("checkout")), 'name="robots" content="noindex,nofollow"')
+
+    @override_settings(SEO_INDEXABLE=True)
+    def test_public_seo_metadata_sitemap_and_product_schema(self):
+        self.product.discount_percent = 20
+        self.product.description = 'Описание </script><script>alert(1)</script>'
+        self.product.save(update_fields=["discount_percent", "description"])
+        hidden = Product.objects.create(category=self.product.category, name="Скрытый", slug="hidden-seo", description="Описание", price=100, is_visible=False)
+        response = self.client.get(reverse("product", args=[self.product.slug]))
+        self.assertContains(response, '<meta name="robots" content="index,follow">')
+        self.assertContains(response, '<link rel="canonical" href="http://testserver/product/item/">')
+        match = re.search(r'<script type="application/ld\+json">(.*?)</script>', response.content.decode(), re.S)
+        self.assertIsNotNone(match)
+        schema = json.loads(match.group(1))
+        self.assertEqual((schema["name"], schema["offers"]["price"], schema["offers"]["priceCurrency"]), (self.product.name, "1200.00", "RUB"))
+        self.assertNotIn("</script><script>", match.group(1))
+        self.assertContains(self.client.get(reverse("catalog"), {"category": "tech"}), '<meta name="robots" content="index,follow">')
+        filtered = self.client.get(reverse("catalog"), {"category": "tech", "price_to": "2000"})
+        self.assertContains(filtered, '<meta name="robots" content="noindex,follow">')
+        self.assertContains(filtered, 'href="http://testserver/?category=tech"')
+        sitemap = self.client.get(reverse("sitemap_xml"))
+        self.assertContains(sitemap, "http://testserver/product/item/")
+        self.assertNotContains(sitemap, hidden.slug)
+        self.assertContains(self.client.get(reverse("robots_txt")), "Sitemap: http://testserver/sitemap.xml")
+
     def test_coupon_stack_limit_and_idempotent_checkout(self):
         self.product.discount_percent = 20
         self.product.save(update_fields=["discount_percent"])

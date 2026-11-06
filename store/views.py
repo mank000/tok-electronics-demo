@@ -21,6 +21,7 @@ from .models import BotUser, Category, CustomerProfile, Favorite, Order, OrderIt
 from .phone_login import issue_code, normalize_phone, verify_code
 from .pricing import cart_totals
 from .security import TelegramAuthError, current_profile, telegram_id_from_request, verified_init_profile
+from .seo import catalog_metadata, product_metadata
 from .telegram_login import complete_login, configured as telegram_login_configured, start_login
 from .services import PaymentError, process_payment_event, queue_buyer, queue_order_created, queue_shop, signed_event
 
@@ -35,6 +36,7 @@ def page(request, name, context=None, status=200):
 
 def catalog(request):
     category = request.GET.get("category", "")
+    category_obj = Category.objects.filter(slug=category).first() if category else None
     search = request.GET.get("q", "").strip()[:100]
     sort = request.GET.get("sort", "")
     products = Product.objects.filter(is_visible=True).select_related("category").prefetch_related("images")
@@ -71,7 +73,8 @@ def catalog(request):
         "availability_options": [{"value": value, "label": label, "selected": value in availability} for value, label in Product.Availability.choices],
         "facet_groups": groups, "price_from": price_from, "price_to": price_to, "sale_only": sale_only, "filter_error": filter_error,
         "filters_active": bool(availability or price_from or price_to or sale_only or selected),
-        "featured": Product.objects.filter(is_visible=True, is_featured=True).prefetch_related("images")[:4], "collections": ProductCollection.objects.filter(is_visible=True).prefetch_related("products__images")[:3]})
+        "featured": Product.objects.filter(is_visible=True, is_featured=True).prefetch_related("images")[:4], "collections": ProductCollection.objects.filter(is_visible=True).prefetch_related("products__images")[:3],
+        **catalog_metadata(request, category_obj)})
 
 
 def product_context(item, **extra):
@@ -100,7 +103,7 @@ def product_context(item, **extra):
 
 def product(request, slug):
     item = get_object_or_404(Product.objects.prefetch_related("images"), slug=slug, is_visible=True)
-    return page(request, "product", product_context(item))
+    return page(request, "product", {**product_context(item), **product_metadata(request, item)})
 
 
 @require_GET

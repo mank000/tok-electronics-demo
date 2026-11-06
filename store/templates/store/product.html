@@ -1,5 +1,5 @@
 {% extends 'store/base.html' %}
-{% block title %}{{ product.name }} — {{ shop_settings.name }}{% endblock %}
+{% block title %}{{ seo_title|default:product.name }}{% endblock %}
 {% block content %}<div class="page-wrap">
   <div class="breadcrumbs"><a href="{% url 'catalog' %}">Каталог</a> / <a href="{% url 'catalog' %}?category={{ product.category.slug }}#catalog">{{ product.category.name }}</a> / {{ product.name }}</div>
   <div class="product-layout"><div class="gallery"><div class="gallery-main">{% with photo=product.first_image %}{% if photo %}<img id="gallery-current" src="{{ photo.image.url }}" alt="{{ photo.alt }}">{% endif %}{% endwith %}</div><div class="gallery-thumbs">{% for photo in product.images.all %}<button type="button" class="gallery-thumb {% if forloop.first %}active{% endif %}" data-image="{{ photo.image.url }}" data-alt="{{ photo.alt }}"><img src="{{ photo.thumb.url }}" alt="{{ photo.alt }}" loading="lazy"></button>{% endfor %}</div></div>

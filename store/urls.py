@@ -1,7 +1,9 @@
 from django.urls import path
-from . import chat_views, views
+from . import chat_views, seo, views
 
 urlpatterns = [
+    path("robots.txt", seo.robots_txt, name="robots_txt"),
+    path("sitemap.xml", seo.sitemap_xml, name="sitemap_xml"),
     path("", views.catalog, name="catalog"),
     path("compare/", views.compare, name="compare"),
     path("product/<slug:slug>/", views.product, name="product"),
