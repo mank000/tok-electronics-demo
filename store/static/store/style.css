@@ -32,3 +32,4 @@ html[data-telegram=on] .site-shell{padding-left:max(20px,var(--tg-content-safe-a
 .catalog-results[aria-busy="true"]{opacity:.55;transition:opacity .15s}
 
 .catalog-pagination { display: flex; justify-content: center; align-items: center; gap: 24px; margin-top: 28px; }
+.account-list + nav { display: flex; gap: 24px; margin-top: 24px; }

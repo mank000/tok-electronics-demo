@@ -328,7 +328,7 @@
       article.append(title, info, link); return article;
     };
     if (tg?.initData) document.querySelector('.account-logout')?.setAttribute('hidden','');
-    fetch('/api/account/', {headers:identityHeaders()}).then(async response => {
+    fetch(`/api/account/?page=${encodeURIComponent(new URLSearchParams(location.search).get('page') || '1')}`, {headers:identityHeaders()}).then(async response => {
       if(response.status===401) { document.getElementById('account-login').hidden=false; return null; }
       if(!response.ok) throw Error('Не удалось открыть кабинет');
       return response.json();
@@ -343,6 +343,17 @@
           const detail=type==='current'||type==='purchases' ? `${item.created} · ${item.status} · ${money(item.total)} · ${item.items.map(x => x.name).join(', ')}` : type==='wishes' ? `Заявка от ${item.created}` : money(item.price);
           list.append(card(item.id ? `Заказ №${item.id}` : item.name, detail, item.url));
         }
+      }
+      for (const list of document.querySelectorAll('[data-account-list]')) {
+        const pagination = data.pagination[list.dataset.accountList];
+        const nav = document.createElement('nav');
+        nav.setAttribute('aria-label', 'Страницы');
+        for (const [label, page] of [['← Назад', pagination.previous], ['Далее →', pagination.next]]) {
+          if (!page) continue;
+          const link = document.createElement('a'); link.className = 'text-button';
+          link.href = `?page=${page}`; link.textContent = label; nav.append(link);
+        }
+        list.after(nav);
       }
       const track=document.getElementById('recent-track');
       if (track) {
