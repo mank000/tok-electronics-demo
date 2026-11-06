@@ -1135,3 +1135,45 @@ class CustomerChatTests(TestCase):
         session["telegram_name"] = "Алиса"
         session.save()
         self.assertEqual(self.client.get(reverse("api_chats")).json()["tag"], "alisa_01")
+
+@override_settings(BOT_TOKEN=TOKEN)
+class LoadRegressionTests(TestCase):
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.category = Category.objects.create(name="Каталог", slug="load")
+
+    def test_catalog_pages_preserve_filters_and_limit_loaded_rows(self):
+        Product.objects.bulk_create([Product(category=self.category, name=f"Товар {i}", slug=f"load-{i}", price=Decimal("101.01"), discount_percent=15, specs={"Тип": "A" if i % 2 else "B"}) for i in range(75)])
+        response = self.client.get(reverse("catalog"), {"category": "load", "sale": "1", "price_to": "86", "page": "2"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.context["products"]), 24)
+        self.assertEqual(response.context["product_page"].paginator.count, 75)
+        self.assertContains(response, "page=3")
+        self.assertContains(response, "sale=1")
+        self.assertEqual(list(response.context["products"])[0].effective_price, Decimal("85.86"))
+
+    def test_chat_list_query_count_does_not_grow_with_conversations(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+        alice = CustomerProfile.objects.create(telegram_id=123, name="Алиса")
+        for i in range(30):
+            peer = CustomerProfile.objects.create(telegram_id=1000+i, name=f"Друг {i}")
+            conversation = ChatConversation.objects.create(left=alice, right=peer)
+            ChatMessage.objects.create(conversation=conversation, sender=peer, text="Привет")
+        with CaptureQueriesContext(connection) as queries:
+            response = self.client.get(reverse("api_chats"), HTTP_X_TELEGRAM_INIT_DATA=telegram_data())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()["conversations"]), 30)
+        self.assertTrue(all(row["unread"] == 1 for row in response.json()["conversations"]))
+        self.assertLessEqual(len(queries), 5)
+
+    def test_account_favorites_pagination_keeps_every_item_accessible(self):
+        products = [Product.objects.create(category=self.category, name=f"Товар {i}", slug=f"fav-{i}", price=100) for i in range(25)]
+        Favorite.objects.bulk_create([Favorite(product=p, telegram_id=123) for p in products])
+        first = self.client.get(reverse("account_data"), HTTP_X_TELEGRAM_INIT_DATA=telegram_data()).json()
+        second = self.client.get(reverse("account_data"), {"page": 2}, HTTP_X_TELEGRAM_INIT_DATA=telegram_data()).json()
+        self.assertEqual(len(first["favorites"]), 20)
+        self.assertEqual(len(second["favorites"]), 5)
+        self.assertEqual(first["pagination"]["favorites"]["next"], 2)
+        self.assertEqual(len({item["url"] for item in first["favorites"] + second["favorites"]}), 25)
