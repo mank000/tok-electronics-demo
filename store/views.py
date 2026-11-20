@@ -27,7 +27,9 @@ from .integrations import get_runtime_config, yookassa_configured
 from .models import BotUser, Category, CustomerProfile, Favorite, Order, OrderItem, PaymentAttempt, Product, ProductCollection, ProductQuestion, ProductReview, RecentlyViewed, ReturnRequest, Wish
 from .phone_login import issue_code, normalize_phone, verify_code
 from .pricing import cart_totals
+from .reservations import ONLINE_HOLD, RECEIPT_HOLD, available_quantities
 from .security import TelegramAuthError, current_profile, telegram_id_from_request, verified_init_profile
+from .shopping_state import remove_purchased_items
 from .seo import catalog_metadata, product_metadata
 from .telegram_login import complete_login, configured as telegram_login_configured, start_login
 from .services import PaymentError, process_payment_event, queue_buyer, queue_order_created, queue_shop, signed_event
@@ -111,7 +113,7 @@ def product_context(item, **extra):
         accessories = list(Product.objects.filter(category__slug="accessories", is_visible=True).exclude(pk=item.pk).prefetch_related("images")[:4])
     published_reviews = item.reviews.filter(is_published=True, telegram_id__isnull=False)
     context = {
-        "product": item, "review_form": ReviewForm(), "question_form": QuestionForm(),
+        "product": item, "stock_available": available_quantities([item]).get(item.pk), "review_form": ReviewForm(), "question_form": QuestionForm(),
         "reviews": published_reviews, "questions": item.questions.filter(is_published=True),
         "rating": published_reviews.aggregate(value=Avg("rating"))["value"],
         "has_demo_reviews": published_reviews.filter(is_demo=True).exists(),
@@ -285,12 +287,14 @@ def cart_quote(request):
     try:
         telegram_id_from_request(request)
         payload = json.loads(request.body)
+        if not isinstance(payload, dict):
+            raise ValueError("Ожидается объект JSON")
         totals = cart_totals(payload.get("cart"), payload.get("coupon_code", ""))
     except TelegramAuthError:
         return HttpResponseForbidden("Проверка Telegram не пройдена")
     except (ValueError, TypeError) as exc:
         return JsonResponse({"error": str(exc)}, status=400)
-    return JsonResponse({"items": [{"id": p.pk, "name": p.name, "quantity": q, "list_price": str(p.price), "price": str(price), "subtotal": str(price * q), "url": reverse("product", args=[p.slug]), "image": p.first_image.thumb.url if p.first_image else ""} for p, q, price in totals["lines"]], "subtotal": str(totals["subtotal"]), "product_discount": str(totals["product_discount"]), "coupon_discount": str(totals["coupon_discount"]), "coupon_code": totals["coupon"].code if totals["coupon"] else "", "total": str(totals["total"])})
+    return JsonResponse({"items": [{"id": p.pk, "name": p.name, "quantity": q, "available": totals["available"].get(p.pk), "list_price": str(p.price), "price": str(price), "subtotal": str(price * q), "url": reverse("product", args=[p.slug]), "image": p.first_image.thumb.url if p.first_image else ""} for p, q, price in totals["lines"]], "subtotal": str(totals["subtotal"]), "product_discount": str(totals["product_discount"]), "coupon_discount": str(totals["coupon_discount"]), "coupon_code": totals["coupon"].code if totals["coupon"] else "", "total": str(totals["total"])})
 
 
 def my_contact(request):
@@ -353,14 +357,20 @@ def checkout(request):
             totals = cart_totals(data["cart"], data["coupon_code"], lock=True)
             gateway = data["payment_gateway"] if data["payment_method"] == "online" else "receipt"
             coupon = totals["coupon"]
-            order = Order.objects.create(checkout_key=key, telegram_id=tg_id, name=profile["name"] if profile else data["name"].strip(), phone=data["phone"], delivery=data["delivery"], address=data["address"].strip(), comment=data["comment"].strip(), payment_method=data["payment_method"], payment_gateway=gateway, subtotal=totals["subtotal"], product_discount=totals["product_discount"], coupon_discount=totals["coupon_discount"], coupon_code=coupon.code if coupon else "", coupon=coupon, total=totals["total"], payment_state="receipt" if data["payment_method"] == "receipt" else "pending")
-            OrderItem.objects.bulk_create([OrderItem(order=order, product=p, title=p.name, quantity=q, unit_price=price, list_unit_price=p.price) for p, q, price in totals["lines"]])
-            if coupon:
-                coupon.uses += 1
-                coupon.save(update_fields=["uses"])
+            expiry = timezone.now() + (ONLINE_HOLD if gateway != "receipt" else RECEIPT_HOLD)
+            order = Order.objects.create(checkout_key=key, coupon_reserved=bool(coupon), reservation_expires_at=expiry, telegram_id=tg_id, name=profile["name"] if profile else data["name"].strip(), phone=data["phone"], delivery=data["delivery"], address=data["address"].strip(), comment=data["comment"].strip(), payment_method=data["payment_method"], payment_gateway=gateway, subtotal=totals["subtotal"], product_discount=totals["product_discount"], coupon_discount=totals["coupon_discount"], coupon_code=coupon.code if coupon else "", coupon=coupon, total=totals["total"], payment_state="receipt" if data["payment_method"] == "receipt" else "pending")
+            OrderItem.objects.bulk_create([
+                OrderItem(order=order, product=product, title=product.name, quantity=quantity,
+                          unit_price=price, list_unit_price=product.price,
+                          inventory_state=OrderItem.Inventory.RESERVED if product.stock_quantity is not None
+                          else OrderItem.Inventory.UNTRACKED)
+                for product, quantity, price in totals["lines"]
+            ])
             if order.payment_method == "online":
                 PaymentAttempt.objects.create(order=order, gateway=gateway)
             queue_order_created(order)
+            if tg_id:
+                remove_purchased_items(tg_id, order)
     except ValueError as exc:
         form.add_error(None, str(exc))
         return page(request, "checkout", {"form": form, "demo_enabled": settings.DEMO_PAYMENTS, "yoo_enabled": yookassa_configured()}, 400)
@@ -389,7 +399,7 @@ def order_page(request, token):
     order, denied = owned_order(request, token)
     if denied is not None:
         return denied
-    return page(request, "order", {"order": order, "demo": settings.DEMO_PAYMENTS})
+    return page(request, "order", {"order": order, "demo": settings.DEMO_PAYMENTS, "can_pay": can_pay(order)})
 
 
 def demo_pay(request, token):
@@ -398,7 +408,7 @@ def demo_pay(request, token):
     order, denied = owned_order(request, token)
     if denied is not None:
         return denied
-    if order.payment_gateway != "demo" or order.payment_method != "online" or order.payment_state == "paid":
+    if order.payment_gateway != "demo" or not can_pay(order):
         return redirect("order", token=token)
     if request.method == "POST":
         action = request.POST.get("action")
@@ -416,16 +426,33 @@ def demo_pay(request, token):
     return page(request, "payment", {"order": order})
 
 
+def can_pay(order):
+    return (order.payment_method == Order.Payment.ONLINE and order.payment_state != "paid"
+            and order.status != Order.Status.CANCELLED
+            and (not order.reservation_expires_at or order.reservation_expires_at > timezone.now()))
+
+
 def yoo_pay(request, token):
     from .yookassa import create_payment
     order, denied = owned_order(request, token)
     if denied is not None:
         return denied
-    if order.payment_gateway != "yookassa" or order.payment_method != "online" or order.payment_state == "paid":
+    if order.payment_gateway != "yookassa" or not can_pay(order):
         return redirect("order", token=token)
-    attempt = order.attempts.order_by("-created_at").first()
-    if not attempt or attempt.state != "pending":
-        attempt = PaymentAttempt.objects.create(order=order, gateway="yookassa")
+    if not yookassa_configured():
+        return page(request, "yoo_payment", {"order": order, "error": "Тестовый магазин ЮKassa недоступен"}, 503)
+    with transaction.atomic():
+        order = Order.objects.select_for_update().get(pk=order.pk)
+        if not can_pay(order):
+            return redirect("order", token=token)
+        attempt = order.attempts.order_by("-created_at").first()
+        if not attempt or attempt.state != "pending":
+            attempt = PaymentAttempt.objects.create(order=order, gateway="yookassa")
+        if not attempt.provider_started_at:
+            # Reserve before calling the provider. A network error can leave the
+            # payment status unknown, so expiry cannot safely release the stock.
+            attempt.provider_started_at = timezone.now()
+            attempt.save(update_fields=["provider_started_at"])
     if not attempt.confirmation_token:
         try:
             create_payment(order, attempt, request.build_absolute_uri(reverse("order", args=[token])))
@@ -590,24 +617,28 @@ def request_return(request, token, item_id):
     order, denied = owned_order(request, token)
     if denied is not None:
         return denied
-    item = get_object_or_404(OrderItem, pk=item_id, order=order)
-    if order.status != Order.Status.DELIVERED:
-        return HttpResponseBadRequest("Заявку на возврат можно подать после выдачи заказа")
-    if item.return_requests.exists():
-        return HttpResponseBadRequest("Заявка по этой позиции уже есть")
-    form = ReturnForm(request.POST)
-    if not form.is_valid() or not 1 <= form.cleaned_data["quantity"] <= item.quantity:
-        return HttpResponseBadRequest("Проверьте данные возврата")
-    entry = form.save(commit=False)
-    entry.order_item = item
-    entry.save()
-    queue_shop(f"Заявка на возврат №{entry.pk}: заказ №{order.pk}, {item.title} × {entry.quantity}.")
+    with transaction.atomic():
+        order = Order.objects.select_for_update().get(pk=order.pk)
+        item = get_object_or_404(OrderItem, pk=item_id, order=order)
+        if order.status != Order.Status.DELIVERED:
+            return HttpResponseBadRequest("Заявку на возврат можно подать после выдачи заказа")
+        if item.return_requests.exists():
+            return HttpResponseBadRequest("Заявка по этой позиции уже есть")
+        form = ReturnForm(request.POST)
+        if not form.is_valid() or not 1 <= form.cleaned_data["quantity"] <= item.quantity:
+            return HttpResponseBadRequest("Проверьте данные возврата")
+        entry = form.save(commit=False)
+        entry.order_item = item
+        entry.save()
+        queue_shop(f"Заявка на возврат №{entry.pk}: заказ №{order.pk}, {item.title} × {entry.quantity}.")
     return redirect(reverse("order", args=[token]) + "#returns")
 
 
 @csrf_exempt
 @require_POST
 def payment_webhook(request):
+    if not settings.DEMO_PAYMENTS:
+        return HttpResponse(status=404)
     try:
         changed = process_payment_event(request.body, request.headers.get("X-Payment-Signature", ""))
     except PaymentError as exc:

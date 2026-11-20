@@ -8,6 +8,7 @@ from django.db import transaction
 
 from .integrations import get_runtime_config
 from .models import Order, PaymentAttempt, PaymentEvent
+from .reservations import record_coupon_use
 from .services import PaymentError, queue_buyer, queue_shop
 
 
@@ -74,8 +75,8 @@ def sync_payment(attempt):
         return False
     state = "paid" if status == "succeeded" else "declined"
     with transaction.atomic():
-        locked = PaymentAttempt.objects.select_for_update().get(pk=attempt.pk)
         order = Order.objects.select_for_update().get(pk=attempt.order_id)
+        locked = PaymentAttempt.objects.select_for_update().get(pk=attempt.pk)
         if locked.state != "pending" or order.status == Order.Status.CANCELLED:
             return False
         if order.payment_state == "paid":
@@ -86,7 +87,9 @@ def sync_payment(attempt):
         order.payment_state = state
         if state == "paid":
             order.status = Order.Status.PAID
-        order.save(update_fields=["payment_state", "status", "updated_at"])
+            order.reservation_expires_at = None
+            record_coupon_use(order)
+        order.save(update_fields=["payment_state", "status", "reservation_expires_at", "coupon_reserved", "updated_at"])
         queue_shop(f"Заказ №{order.pk}: оплата ЮKassa {'успешна' if state == 'paid' else 'отклонена'}.")
         queue_buyer(order, f"Заказ №{order.pk}: {'оплачен' if state == 'paid' else 'оплата отклонена, можно повторить'}.")
     return True

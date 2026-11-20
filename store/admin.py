@@ -9,10 +9,13 @@ from django.db.models import Count, F
 from django.template.response import TemplateResponse
 from django.utils.decorators import method_decorator
 from django.utils.html import format_html
+from django.utils import timezone
 from django.views.decorators.debug import sensitive_post_parameters
 from .analytics import dashboard_data
 from .integrations import encrypt_secret
 from .models import BotUser, Category, Coupon, CustomerProfile, Favorite, IntegrationSettings, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductCollection, ProductImage, ProductQuestion, ProductReview, ReturnRequest, ShopAnalytics, ShopSettings, SupportMessage, SupportTicket, Wish
+from .refunds import confirm_refund, demo_refund, refund_amount
+from .reservations import cancel_unpaid, has_open_provider_payment, issue_inventory, reserved_quantities
 from .services import queue_buyer, queue_order_changed, queue_telegram
 from .support import reply_to_ticket
 
@@ -221,16 +224,48 @@ class ProductImageInline(admin.StackedInline):
         return "Фото не загружено"
 
 
+class ProductStockForm(forms.ModelForm):
+    stock_snapshot = forms.CharField(required=False, widget=forms.HiddenInput)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance.pk:
+            self.fields["stock_snapshot"].initial = str(self.instance.stock_quantity)
+
+    def clean_stock_quantity(self):
+        quantity = self.cleaned_data["stock_quantity"]
+        if not self.instance.pk:
+            return quantity
+        current = Product.objects.select_for_update().get(pk=self.instance.pk)
+        snapshot = self.cleaned_data.get("stock_snapshot")
+        if snapshot == str(quantity) or self.add_prefix("stock_quantity") not in self.data:
+            return current.stock_quantity
+        if snapshot and snapshot != str(current.stock_quantity):
+            raise forms.ValidationError("Остаток изменился. Обновите страницу и проверьте значение.")
+        reserved = reserved_quantities([self.instance.pk]).get(self.instance.pk, 0)
+        if reserved and (quantity is None or quantity < reserved):
+            raise forms.ValidationError(f"В резерве {reserved} шт. Остаток не может быть меньше.")
+        return quantity
+
+
 @admin.register(Product)
 class ProductAdmin(ResponsiveAdmin):
-    list_display = ("name", "category", "price", "discount_percent", "current_price", "availability", "is_visible", "is_featured", "wish_count")
+    form = ProductStockForm
+    list_display = ("name", "category", "price", "discount_percent", "current_price", "stock_quantity", "availability", "is_visible", "is_featured", "wish_count")
     list_filter = ("category", "availability", "is_visible", "is_featured")
     list_editable = ("price", "availability", "is_visible")
     search_fields = ("name", "slug", "description")
     prepopulated_fields = {"slug": ("name",)}
     inlines = (ProductImageInline,)
     filter_horizontal = ("accessories",)
-    fieldsets = ((None, {"fields": ("category", "name", "slug", "description", "specs", "price", "availability", "is_visible", "is_featured")}), ("Скидка по расписанию", {"fields": ("discount_percent", "discount_starts_at", "discount_ends_at")}), ("Доставка и дополнения", {"fields": ("delivery_min_days", "delivery_max_days", "accessories")}))
+    fieldsets = ((None, {"fields": ("category", "name", "slug", "description", "specs", "price", "stock_snapshot", "stock_quantity", "availability", "is_visible", "is_featured")}), ("Скидка по расписанию", {"fields": ("discount_percent", "discount_starts_at", "discount_ends_at")}), ("Доставка и дополнения", {"fields": ("delivery_min_days", "delivery_max_days", "accessories")}))
+
+    def save_model(self, request, obj, form, change):
+        if change:
+            current = Product.objects.select_for_update().get(pk=obj.pk)
+            if "stock_quantity" not in form.fields:
+                obj.stock_quantity = current.stock_quantity
+        super().save_model(request, obj, form, change)
 
     def get_queryset(self, request):
         return super().get_queryset(request).annotate(_wish_count=Count("wishes"))
@@ -252,23 +287,69 @@ class CouponAdmin(ResponsiveAdmin):
 class OrderItemInline(admin.TabularInline):
     model = OrderItem
     extra = 0
-    readonly_fields = ("product", "title", "quantity", "list_unit_price", "unit_price")
+    readonly_fields = ("product", "title", "quantity", "list_unit_price", "unit_price", "inventory_state")
     can_delete = False
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+class OrderFulfillmentForm(forms.ModelForm):
+    def clean_status(self):
+        status = self.cleaned_data["status"]
+        order = Order.objects.select_for_update().get(pk=self.instance.pk)
+        if status == order.status:
+            return status
+        transitions = {
+            Order.Status.NEW: (Order.Status.PACKING, Order.Status.CANCELLED),
+            Order.Status.PAID: (Order.Status.PACKING,),
+            Order.Status.PACKING: (Order.Status.SHIPPED, Order.Status.DELIVERED, Order.Status.CANCELLED),
+            Order.Status.SHIPPED: (Order.Status.DELIVERED,),
+        }
+        if status not in transitions.get(order.status, ()):
+            raise forms.ValidationError("Этот переход для текущего статуса недоступен.")
+        if status == Order.Status.CANCELLED:
+            if order.payment_state == "paid" or has_open_provider_payment(order):
+                raise forms.ValidationError("Сначала подтвердите итог внешнего платежа или оформите возврат.")
+        elif order.payment_method == Order.Payment.ONLINE and order.payment_state != "paid":
+            raise forms.ValidationError("Сначала подтвердите оплату.")
+        if (status == Order.Status.PACKING and order.reservation_expires_at
+                and order.reservation_expires_at <= timezone.now()):
+            raise forms.ValidationError("Резерв истёк. Попросите покупателя оформить новый заказ.")
+        return status
 
 
 @admin.register(Order)
 class OrderAdmin(ResponsiveAdmin):
+    form = OrderFulfillmentForm
     list_display = ("id", "is_demo", "created_at", "name", "phone", "coupon_code", "total", "delivery", "payment_state", "status", "track_number")
     list_filter = ("is_demo", "status", "payment_state", "delivery", "created_at")
     search_fields = ("=id", "name", "phone", "track_number")
-    readonly_fields = ("access_token", "checkout_key", "telegram_id", "name", "phone", "delivery", "address", "comment", "payment_method", "payment_gateway", "subtotal", "product_discount", "coupon_discount", "coupon_code", "coupon", "total", "payment_state", "created_at", "updated_at")
+    readonly_fields = ("access_token", "checkout_key", "telegram_id", "name", "phone", "delivery", "address", "comment", "payment_method", "payment_gateway", "subtotal", "product_discount", "coupon_discount", "coupon_code", "coupon", "total", "payment_state", "consent_at", "reservation_expires_at", "created_at", "updated_at")
     inlines = (OrderItemInline,)
 
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
     def save_model(self, request, obj, form, change):
-        old = Order.objects.get(pk=obj.pk) if change else None
-        super().save_model(request, obj, form, change)
-        if old:
-            queue_order_changed(obj, old.status, old.track_number)
+        order = Order.objects.select_for_update().get(pk=obj.pk)
+        old_status, old_track = order.status, order.track_number
+        if "status" in form.changed_data:
+            order.status = obj.status
+            if order.status == Order.Status.CANCELLED:
+                cancel_unpaid(order)
+            elif order.status == Order.Status.DELIVERED:
+                issue_inventory(order)
+            elif order.status == Order.Status.PACKING:
+                order.reservation_expires_at = None
+        if "track_number" in form.changed_data:
+            order.track_number = obj.track_number
+        order.save(update_fields=["status", "payment_state", "reservation_expires_at",
+                                  "coupon_reserved", "track_number", "updated_at"])
+        queue_order_changed(order, old_status, old_track)
 
 
 @admin.register(ShopAnalytics)
@@ -410,7 +491,13 @@ class CustomerProfileAdmin(ResponsiveAdmin):
 class PaymentAttemptAdmin(ResponsiveAdmin):
     list_display = ("reference", "order", "gateway", "state", "created_at")
     list_filter = ("state",)
-    readonly_fields = ("reference", "order", "gateway", "provider_id", "confirmation_token", "state", "created_at")
+    readonly_fields = ("reference", "order", "gateway", "provider_id", "confirmation_token", "state", "provider_started_at", "provider_next_check_at", "created_at")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(PaymentEvent)
@@ -447,17 +534,54 @@ class ProductQuestionAdmin(ResponsiveAdmin):
     search_fields = ("product__name", "author", "text")
 
 
+class ReturnSettlementForm(forms.ModelForm):
+    def clean(self):
+        data = super().clean()
+        order_id = self.instance.order_item.order_id
+        order = Order.objects.select_for_update().get(pk=order_id)
+        current = ReturnRequest.objects.select_for_update().get(pk=self.instance.pk)
+        status = data.get("status")
+        if current.refunded_at or current.status == "closed":
+            if self.has_changed():
+                raise forms.ValidationError("Подтверждённый возврат уже зафиксирован.")
+            return data
+        if status == "closed" and current.status != "closed":
+            if current.status != "approved":
+                raise forms.ValidationError("Сначала одобрите заявку.")
+            if refund_amount(current, order) is None:
+                raise forms.ValidationError("Сумма возврата доступна после подтверждения оплаты.")
+            if not data.get("refund_reference") and not demo_refund(order):
+                raise forms.ValidationError("Укажите номер чека или документа после фактического возврата денег.")
+        return data
+
+
 @admin.register(ReturnRequest)
 class ReturnRequestAdmin(ResponsiveAdmin):
-    list_display = ("id", "order_item", "quantity", "reason", "status", "created_at")
+    form = ReturnSettlementForm
+    list_display = ("id", "order_item", "quantity", "reason", "status", "refund_amount", "refunded_at", "created_at")
     list_filter = ("status", "reason", "created_at")
-    readonly_fields = ("order_item", "quantity", "reason", "comment", "created_at")
+    readonly_fields = ("order_item", "quantity", "reason", "comment", "expected_refund", "refund_amount", "refunded_at", "created_at")
+
+    @admin.display(description="Ожидаемая сумма возврата, ₽")
+    def expected_refund(self, obj):
+        return refund_amount(obj, obj.order_item.order)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
     def save_model(self, request, obj, form, change):
-        old_status = ReturnRequest.objects.get(pk=obj.pk).status if change else None
+        order = Order.objects.select_for_update().get(pk=obj.order_item.order_id)
+        current = ReturnRequest.objects.select_for_update().get(pk=obj.pk)
+        if current.refunded_at or current.status == "closed":
+            return
+        if obj.status == "closed" and current.status == "approved":
+            confirm_refund(obj, order)
         super().save_model(request, obj, form, change)
-        if old_status and old_status != obj.status:
-            queue_buyer(obj.order_item.order, f"Заявка на возврат №{obj.pk}: статус «{obj.get_status_display()}».")
+        if current.status != obj.status:
+            queue_buyer(order, f"Заявка на возврат №{obj.pk}: статус «{obj.get_status_display()}».")
 
 
 @admin.register(ProductCollection)

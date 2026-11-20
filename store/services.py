@@ -6,9 +6,10 @@ from django.db import transaction
 from django.utils import timezone
 from .integrations import get_runtime_config
 from .models import BotUser, Notification, Order, PaymentAttempt, PaymentEvent, Product
+from .reservations import record_coupon_use
 
 
-def cart_lines(cart):
+def cart_lines(cart, lock=False):
     if not isinstance(cart, dict) or not cart or len(cart) > 50:
         raise ValueError("Корзина пуста или слишком велика")
     ids = []
@@ -23,6 +24,8 @@ def cart_lines(cart):
         ids.append(pk)
         quantities[pk] = quantity
     products_query = Product.objects.filter(pk__in=ids, is_visible=True).exclude(availability="preorder")
+    if lock:
+        products_query = products_query.select_for_update().order_by("pk")
     products = list(products_query.prefetch_related("images"))
     if len(products) != len(ids):
         raise ValueError("Один из товаров недоступен")
@@ -89,13 +92,15 @@ def process_payment_event(raw, signature):
     except (KeyError, ValueError, TypeError, AttributeError) as exc:
         raise PaymentError("Некорректное событие") from exc
     with transaction.atomic():
-        attempt = PaymentAttempt.objects.select_for_update().select_related("order").filter(reference=reference).first()
+        attempt = PaymentAttempt.objects.filter(reference=reference, gateway="demo").first()
         if not attempt:
             raise PaymentError("Попытка оплаты не найдена")
+        order = Order.objects.select_for_update().get(pk=attempt.order_id)
+        attempt = PaymentAttempt.objects.select_for_update().get(pk=attempt.pk)
         if PaymentEvent.objects.filter(event_id=event_id).exists():
             return False
-        order = Order.objects.select_for_update().get(pk=attempt.order_id)
-        if attempt.state != "pending" or order.payment_state == "paid" or order.status == Order.Status.CANCELLED:
+        if (attempt.state != "pending" or order.payment_state == "paid" or order.status == Order.Status.CANCELLED
+                or (order.reservation_expires_at and order.reservation_expires_at <= timezone.now())):
             raise PaymentError("Попытка уже завершена")
         PaymentEvent.objects.create(event_id=event_id, attempt=attempt, status=status)
         attempt.state = status
@@ -103,7 +108,9 @@ def process_payment_event(raw, signature):
         order.payment_state = status
         if status == "paid":
             order.status = Order.Status.PAID
-        order.save(update_fields=["payment_state", "status", "updated_at"])
+            order.reservation_expires_at = None
+            record_coupon_use(order)
+        order.save(update_fields=["payment_state", "status", "reservation_expires_at", "coupon_reserved", "updated_at"])
         queue_shop(f"Заказ №{order.pk}: оплата {('успешна' if status == 'paid' else 'отклонена')}.")
         queue_buyer(order, f"Заказ №{order.pk}: {('оплачен' if status == 'paid' else 'оплата отклонена, можно повторить')}.")
     return True
