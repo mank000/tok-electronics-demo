@@ -33,13 +33,109 @@
     location.replace(`/product/${encodeURIComponent(slug)}/`);
   }
   const storageKey = 'tok-cart-v1';
-  if (location.pathname.startsWith('/order/') && new URLSearchParams(location.search).has('created')) { localStorage.removeItem(storageKey); history.replaceState(null, '', location.pathname); }
-  function cart() { try { const value = JSON.parse(localStorage.getItem(storageKey) || '{}'); return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; } catch { return {}; } }
-  function saveCart(value) { localStorage.setItem(storageKey, JSON.stringify(value)); updateCount(); }
-  function updateCount() { document.getElementById('cart-count').textContent = Object.values(cart()).reduce((sum, n) => sum + (+n || 0), 0); }
-  updateCount();
-  document.querySelectorAll('.add-to-cart').forEach(button => button.addEventListener('click', () => { const value = cart(); const id = button.dataset.productId; value[id] = Math.min(20, (+value[id] || 0) + 1); saveCart(value); button.textContent = 'Добавлено ✓'; setTimeout(() => button.innerHTML = 'В корзину <span>↗</span>', 1500); }));
   const compareKey = 'tok-compare-v1';
+  const authenticated = Boolean(tg?.initData || document.body.dataset.sessionAuth === 'true');
+  const identityHeaders = () => tg?.initData ? {'X-Telegram-Init-Data': tg.initData} : {};
+  const csrf = document.cookie.split('; ').find(x => x.startsWith('csrftoken='))?.split('=')[1];
+  if (location.pathname.startsWith('/order/') && new URLSearchParams(location.search).has('created')) {
+    if (!authenticated) localStorage.removeItem(storageKey);
+    history.replaceState(null, '', location.pathname);
+  }
+  function localCart() {
+    try {
+      const value = JSON.parse(localStorage.getItem(storageKey) || '{}');
+      return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    } catch { return {}; }
+  }
+  function localComparison() {
+    try { return cleanCompare(JSON.parse(localStorage.getItem(compareKey) || '[]')); }
+    catch { return []; }
+  }
+  let serverCart = {};
+  function cart() { return authenticated ? serverCart : localCart(); }
+  function updateCount() {
+    document.getElementById('cart-count').textContent = Object.values(cart()).reduce((sum, n) => sum + (+n || 0), 0);
+  }
+
+  async function requestShoppingState(operation) {
+    const options = {headers: identityHeaders(), cache: 'no-store'};
+    if (operation) {
+      options.method = 'POST';
+      options.keepalive = true;
+      options.headers = {...options.headers, 'Content-Type': 'application/json', 'X-CSRFToken': decodeURIComponent(csrf || '')};
+      options.body = JSON.stringify(operation);
+    }
+    const response = await fetch('/api/me/shopping-state/', options);
+    if (response.status === 401 || response.status === 403) {
+      applyShoppingState({cart: {}, comparison: []});
+      initialized = false;
+      throw Error('Войдите через Telegram для синхронизации.');
+    }
+    const data = await response.json();
+    if (!response.ok) throw Error(data.error || 'Не удалось синхронизировать список покупок.');
+    return data;
+  }
+  function applyShoppingState(data) {
+    serverCart = data.cart;
+    compared = cleanCompare(data.comparison);
+    updateCount();
+    syncCompare();
+  }
+  let initialized = false;
+  async function loadShoppingState() {
+    if (!authenticated) return;
+    if (!initialized) {
+      const guestCart = localCart(), guestComparison = localComparison();
+      if (Object.keys(guestCart).length || guestComparison.length) {
+        const data = await requestShoppingState({
+          action: 'import',
+          cart: guestCart,
+          comparison: guestComparison.map(item => item.slug),
+        });
+        if (JSON.stringify(localCart()) === JSON.stringify(guestCart)) localStorage.removeItem(storageKey);
+        if (JSON.stringify(localComparison()) === JSON.stringify(guestComparison)) localStorage.removeItem(compareKey);
+        applyShoppingState(data);
+        initialized = true;
+        return;
+      }
+    }
+    applyShoppingState(await requestShoppingState());
+    initialized = true;
+  }
+  function shoppingError(error) {
+    compareNotice(error.message || 'Не удалось синхронизировать список покупок.');
+  }
+  let shoppingQueue = Promise.resolve().then(loadShoppingState).catch(shoppingError);
+  function changeShoppingState(operation) {
+    const change = shoppingQueue.then(async () => {
+      if (!initialized) await loadShoppingState();
+      applyShoppingState(await requestShoppingState(operation));
+    });
+    shoppingQueue = change.catch(shoppingError);
+    return change;
+  }
+  async function changeCart(product, delta) {
+    if (authenticated) return changeShoppingState({action: 'cart', product: String(product), delta});
+    const value = cart();
+    const quantity = delta ? Math.min(20, (+value[product] || 0) + delta) : 0;
+    if (quantity > 0) value[product] = quantity;
+    else delete value[product];
+    localStorage.setItem(storageKey, JSON.stringify(value));
+    updateCount();
+  }
+  updateCount();
+  document.addEventListener('click', async event => {
+    const button = event.target.closest('.add-to-cart');
+    if (!button || button.disabled) return;
+    button.disabled = true;
+    try {
+      await changeCart(button.dataset.productId, 1);
+      button.textContent = 'Добавлено ✓';
+      setTimeout(() => button.innerHTML = 'В корзину <span>↗</span>', 1500);
+    } catch {
+      // changeShoppingState already displays the failure to the buyer.
+    } finally { button.disabled = false; }
+  });
   const validSlug = value => typeof value === 'string' && /^[a-z0-9-]{1,50}$/.test(value);
   function cleanCompare(value) {
     if (!Array.isArray(value)) return [];
@@ -51,8 +147,7 @@
     }
     return items;
   }
-  let compared = [];
-  try { compared = cleanCompare(JSON.parse(localStorage.getItem(compareKey) || '[]')); } catch {}
+  let compared = authenticated ? [] : localComparison();
   const compareUrl = (items, category='') => {
     if (!items.length) return '/compare/';
     const params = new URLSearchParams({items:items.map(item => item.slug).join(',')});
@@ -60,11 +155,18 @@
     return `/compare/?${params}`;
   };
   const comparePage = document.getElementById('compare-page');
+  let displayedComparison = [];
   if (comparePage) {
     const params = new URLSearchParams(location.search);
     if (params.has('items')) {
-      try { compared = cleanCompare(JSON.parse(document.getElementById('compare-page-items').textContent)); localStorage.setItem(compareKey, JSON.stringify(compared)); } catch {}
-    } else if (compared.length) location.replace(compareUrl(compared));
+      displayedComparison = cleanCompare(JSON.parse(document.getElementById('compare-page-items').textContent));
+      if (!authenticated) {
+        compared = displayedComparison;
+        localStorage.setItem(compareKey, JSON.stringify(compared));
+      }
+    } else {
+      shoppingQueue.then(() => { if (compared.length) location.replace(compareUrl(compared)); });
+    }
   }
   function syncCompare() {
     const nav = document.querySelector('.compare-nav'), count = document.getElementById('compare-count');
@@ -92,22 +194,66 @@
     clearTimeout(compareNotice.timer); compareNotice.timer = setTimeout(() => { notice.hidden=true; }, 3500);
   }
   syncCompare();
-  document.addEventListener('click', event => {
+  document.addEventListener('click', async event => {
     const button = event.target.closest('[data-compare-slug]');
-    if (!button) return;
-    const slug=button.dataset.compareSlug, category=button.dataset.compareCategory;
-    if (compared.some(item => item.slug===slug)) { saveCompare(compared.filter(item => item.slug!==slug)); return; }
-    if (compared.filter(item => item.category===category).length>=4) { compareNotice('Можно сравнить до четырёх товаров из одного раздела.'); return; }
-    saveCompare([...compared,{slug,category}]);
+    if (!button || button.disabled) return;
+    button.disabled = true;
+    try {
+      await shoppingQueue;
+      const slug = button.dataset.compareSlug, category = button.dataset.compareCategory;
+      const selected = compared.some(item => item.slug === slug);
+      if (authenticated) {
+        await changeShoppingState(selected ? {action: 'compare-remove', products: [slug]} : {action: 'compare-add', product: slug});
+      } else if (selected) {
+        saveCompare(compared.filter(item => item.slug !== slug));
+      } else if (compared.filter(item => item.category === category).length < 4 && compared.length < 20) {
+        saveCompare([...compared, {slug, category}]);
+      } else {
+        compareNotice('Можно сравнить до четырёх товаров из одного раздела и до двадцати всего.');
+      }
+    } catch {
+      // changeShoppingState already displays the failure to the buyer.
+    } finally { button.disabled = false; }
   });
   if (comparePage) {
     const selectedCategory = comparePage.dataset.category;
-    document.querySelectorAll('[data-compare-remove]').forEach(button => button.addEventListener('click', () => { const items=compared.filter(item => item.slug!==button.dataset.compareRemove); saveCompare(items); location.assign(compareUrl(items, selectedCategory)); }));
-    document.getElementById('compare-clear-category')?.addEventListener('click', () => { const items=compared.filter(item => item.category!==selectedCategory); saveCompare(items); location.assign(compareUrl(items)); });
-    document.getElementById('compare-clear-all')?.addEventListener('click', () => { saveCompare([]); location.assign('/compare/?items='); });
-    document.getElementById('compare-only-differences')?.addEventListener('change', event => { comparePage.classList.toggle('compare-differences-only', event.target.checked); });
+    const removeCompared = async (slugs, category='') => {
+      try {
+        const remaining = displayedComparison.filter(item => !slugs.includes(item.slug));
+        if (authenticated) await changeShoppingState({action: 'compare-remove', products: slugs});
+        else saveCompare(remaining);
+        location.assign(remaining.length ? compareUrl(remaining, category) : '/compare/?items=');
+      } catch {
+        // Do not navigate away if saving failed.
+      }
+    };
+    document.querySelectorAll('[data-compare-remove]').forEach(button => {
+      button.addEventListener('click', () => removeCompared([button.dataset.compareRemove], selectedCategory));
+    });
+    document.getElementById('compare-clear-category')?.addEventListener('click', () => {
+      removeCompared(displayedComparison.filter(item => item.category === selectedCategory).map(item => item.slug));
+    });
+    document.getElementById('compare-clear-all')?.addEventListener('click', () => {
+      removeCompared(displayedComparison.map(item => item.slug));
+    });
+    document.getElementById('compare-only-differences')?.addEventListener('change', event => {
+      comparePage.classList.toggle('compare-differences-only', event.target.checked);
+    });
   }
-  window.addEventListener('storage', event => { if (event.key===compareKey) { try { compared=cleanCompare(JSON.parse(event.newValue || '[]')); } catch { compared=[]; } syncCompare(); } });
+  window.addEventListener('storage', event => {
+    if (authenticated) return;
+    if (event.key === compareKey) { compared = localComparison(); syncCompare(); }
+    if (event.key === storageKey) { updateCount(); renderBasket(); }
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (!authenticated || document.hidden) return;
+    shoppingQueue = shoppingQueue.then(loadShoppingState).then(renderBasket).catch(shoppingError);
+  });
+  window.addEventListener('pageshow', event => {
+    if (authenticated && event.persisted) {
+      shoppingQueue = shoppingQueue.then(loadShoppingState).then(renderBasket).catch(shoppingError);
+    }
+  });
   const catalogSection = document.getElementById('catalog');
   if (catalogSection) {
     let pendingRequest;
@@ -192,7 +338,6 @@
     window.addEventListener('popstate', () => updateCatalog(location.href, true, true));
   }
   document.querySelectorAll('.gallery-thumb').forEach(button => button.addEventListener('click', () => { const current = document.getElementById('gallery-current'); current.src = button.dataset.image; current.alt = button.dataset.alt; document.querySelectorAll('.gallery-thumb').forEach(x => x.classList.remove('active')); button.classList.add('active'); }));
-  const csrf = document.cookie.split('; ').find(x => x.startsWith('csrftoken='))?.split('=')[1];
   async function quote(promoCode='') {
     const response = await fetch('/api/cart/quote/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':decodeURIComponent(csrf || ''), ...(tg?.initData ? {'X-Telegram-Init-Data':tg.initData} : {})}, body:JSON.stringify({cart:cart(), coupon_code:promoCode})});
     const data = await response.json();
@@ -201,25 +346,43 @@
   }
   const money = value => { const amount=Number(value); return `${amount.toLocaleString('ru-RU',{minimumFractionDigits:Number.isInteger(amount)?0:2,maximumFractionDigits:2})} ₽`; };
   const basketBox = document.getElementById('basket-content');
+  let basketRequest = 0;
   async function renderBasket() {
-    if (!basketBox) return;
+    if (!basketBox || (authenticated && !initialized)) return;
+    const request = ++basketRequest;
     if (!Object.keys(cart()).length) { basketBox.innerHTML = '<p class="empty-state">В корзине пока пусто. <a href="/">Посмотреть каталог ↗</a></p>'; document.getElementById('basket-total').textContent = '0 ₽'; document.getElementById('checkout-link').hidden = true; return; }
     try {
-      const data = await quote(); basketBox.replaceChildren();
+      const data = await quote();
+      if (request !== basketRequest) return;
+      basketBox.replaceChildren();
       for (const item of data.items) {
         const row = document.createElement('div'); row.className='basket-row';
         const photo = document.createElement('img'); photo.src=item.image; photo.alt=item.name; row.append(photo);
         const description=document.createElement('div'); const title=document.createElement('h3'); title.textContent=item.name; const small=document.createElement('small'); small.textContent=money(item.price); description.append(title,small); if(+item.list_price>+item.price){const old=document.createElement('del');old.className='old-price';old.textContent=money(item.list_price);description.append(old);} row.append(description);
         const control=document.createElement('div'); control.className='qty-control'; const minus=document.createElement('button'); minus.type='button'; minus.textContent='−'; const number=document.createElement('span'); number.textContent=item.quantity; const plus=document.createElement('button'); plus.type='button'; plus.textContent='+'; control.append(minus,number,plus); row.append(control);
         const remove=document.createElement('button'); remove.type='button'; remove.className='remove'; remove.textContent='×'; remove.setAttribute('aria-label',`Убрать ${item.name}`); row.append(remove);
-        const change=(n)=>{const value=cart(); if(n<=0) delete value[item.id]; else value[item.id]=Math.min(20,n); saveCart(value); renderBasket();};
-        minus.onclick=()=>change(item.quantity-1); plus.onclick=()=>change(item.quantity+1); remove.onclick=()=>change(0);
+        const change = async delta => {
+          try { await changeCart(item.id, delta); await renderBasket(); }
+          catch { /* Show the error without changing the displayed quantity. */ }
+        };
+        if (item.available !== null) {
+          plus.disabled = item.quantity >= item.available;
+          if (item.quantity > item.available) {
+            const notice = document.createElement('small');
+            notice.className = 'microcopy';
+            notice.textContent = `Доступно ${item.available} шт.`;
+            description.append(notice);
+          }
+        }
+        minus.onclick = () => change(-1);
+        plus.onclick = () => change(1);
+        remove.onclick = () => change(0);
         basketBox.append(row);
       }
       document.getElementById('basket-total').textContent=money(data.total); document.getElementById('checkout-link').hidden=false;
-    } catch(error) { basketBox.innerHTML=''; const msg=document.createElement('p'); msg.className='notice notice-error'; msg.textContent=error.message; basketBox.append(msg); document.getElementById('checkout-link').hidden=true; }
+    } catch(error) { if (request !== basketRequest) return; basketBox.innerHTML=''; const msg=document.createElement('p'); msg.className='notice notice-error'; msg.textContent=error.message; basketBox.append(msg); document.getElementById('checkout-link').hidden=true; }
   }
-  renderBasket();
+  shoppingQueue.then(renderBasket);
   const checkoutForm=document.getElementById('checkout-form');
   if (checkoutForm) {
     const delivery=checkoutForm.elements.delivery, payment=checkoutForm.elements.payment_method;
@@ -231,7 +394,11 @@
     const renderCheckout=async()=>{
       const note=document.getElementById('coupon-message'), button=checkoutForm.querySelector('.submit-order');
       try {
+        await shoppingQueue;
+        if (authenticated && !initialized) throw Error('Не удалось загрузить корзину. Обновите страницу.');
         const data=await quote(checkoutForm.elements.coupon_code.value);
+        const unavailable = data.items.find(item => item.available !== null && item.quantity > item.available);
+        if (unavailable) throw Error(`«${unavailable.name}»: доступно ${unavailable.available} шт. Измените количество в корзине.`);
         const box=document.getElementById('checkout-summary'), discounts=document.getElementById('checkout-discounts');box.replaceChildren();discounts.replaceChildren();
         for(const item of data.items)summaryRow(box,`${item.name} × ${item.quantity}`,money(item.subtotal));
         if(+data.product_discount)summaryRow(discounts,'Скидка на товары',`−${money(data.product_discount)}`);
@@ -239,6 +406,7 @@
         document.getElementById('checkout-total').textContent=money(data.total);note.textContent=data.coupon_code?'Промокод применён.':' ';button.disabled=false;
       } catch(error) {note.textContent=error.message;button.disabled=true;}
     };
+    checkoutForm.querySelector('.submit-order').disabled = true;
     renderCheckout();
     document.getElementById('apply-coupon')?.addEventListener('click',renderCheckout);
     checkoutForm.elements.coupon_code.addEventListener('input',()=>{document.getElementById('coupon-message').textContent='Нажмите «Применить», чтобы пересчитать сумму.';});
@@ -247,7 +415,6 @@
     if(tg?.initData) fetch('/api/me/contact/',{headers:{'X-Telegram-Init-Data':tg.initData}}).then(r=>r.ok?r.json():null).then(data=>{if(data?.phone&&!checkoutForm.elements.phone.value)checkoutForm.elements.phone.value=data.phone;}).catch(()=>{});
     if(tg?.initData && tg.requestContact){contact.hidden=false; contact.addEventListener('click',()=>{tg.requestContact(async granted=>{const note=document.getElementById('contact-note'); note.hidden=false; if(!granted){note.textContent='Контакт не передан. Введите номер вручную.';return;} note.textContent='Ожидаем контакт от бота. Номер можно ввести вручную.'; for(let i=0;i<4;i++){await new Promise(resolve=>setTimeout(resolve,800)); try{const response=await fetch('/api/me/contact/',{headers:{'X-Telegram-Init-Data':tg.initData}}); if(response.ok){const data=await response.json(); if(data.phone){checkoutForm.elements.phone.value=data.phone; note.textContent='Номер получен от бота. Проверьте его перед заказом.';return;}}}catch{}} });});}
   }
-  const identityHeaders = () => tg?.initData ? {'X-Telegram-Init-Data': tg.initData} : {};
   const registrationOverlay=document.getElementById('registration-overlay');
   if (tg?.initData && registrationOverlay && !sessionStorage.getItem('tok-registration-later')) {
     const form=document.getElementById('registration-form'), message=document.getElementById('registration-message');

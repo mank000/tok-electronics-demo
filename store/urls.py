@@ -1,5 +1,6 @@
 from django.urls import path
 from . import chat_views, seo, views
+from .shopping_state import shopping_state
 
 urlpatterns = [
     path("robots.txt", seo.robots_txt, name="robots_txt"),
@@ -33,6 +34,7 @@ urlpatterns = [
     path("auth/telegram/callback/", views.telegram_login_callback, name="telegram_login_callback"),
     path("auth/telegram/logout/", views.telegram_logout, name="telegram_logout"),
     path("basket/", views.basket, name="basket"),
+    path("api/me/shopping-state/", shopping_state, name="shopping_state"),
     path("api/cart/quote/", views.cart_quote, name="cart_quote"),
     path("api/me/contact/", views.my_contact, name="my_contact"),
     path("checkout/", views.checkout, name="checkout"),

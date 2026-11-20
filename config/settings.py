@@ -25,7 +25,12 @@ WSGI_APPLICATION = "config.wsgi.application"
 if os.environ.get("DATABASE_URL_HOST"):
     DATABASES = {"default": {"ENGINE": "django.db.backends.postgresql", "NAME": os.environ.get("POSTGRES_DB", "electroshop"), "USER": os.environ.get("POSTGRES_USER", "electroshop"), "PASSWORD": os.environ.get("POSTGRES_PASSWORD", ""), "HOST": os.environ["DATABASE_URL_HOST"], "PORT": "5432"}}
 else:
-    DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": BASE_DIR / "db.sqlite3"}}
+    DATABASES = {"default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "db.sqlite3",
+        # Serialize local writes before reading stock or account state in a transaction.
+        "OPTIONS": {"transaction_mode": "IMMEDIATE"},
+    }}
 LANGUAGE_CODE = "ru-ru"
 TIME_ZONE = "Asia/Barnaul"
 USE_TZ = True

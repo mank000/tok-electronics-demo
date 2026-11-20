@@ -6,6 +6,8 @@ import re
 import tempfile
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from datetime import datetime, time as datetime_time, timedelta
 from decimal import Decimal
 from unittest.mock import Mock, patch
@@ -16,13 +18,15 @@ from django.contrib.auth.models import Permission
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import Client, TestCase, override_settings
+from django.db import connections
+from django.test import Client, TestCase, TransactionTestCase, override_settings, skipUnlessDBFeature
 from django.urls import reverse
 from django.utils import timezone
 from .integrations import encrypt_secret, get_runtime_config
 from .analytics import dashboard_data, month_at
 from .models import BotUser, BrowserLoginCode, Category, ChatConversation, ChatMessage, Coupon, CustomerProfile, Favorite, IntegrationSettings, Notification, Order, OrderItem, PaymentAttempt, PaymentEvent, Product, ProductImage, ProductQuestion, ProductReview, RecentlyViewed, ReturnRequest, ShopSettings, SupportMessage, SupportTicket, Wish
 from .phone_login import normalize_phone
+from .reservations import expire_reservations
 from .security import TelegramAuthError, verify_init_data
 from .services import flush_notifications, process_payment_event, queue_buyer, queue_order_changed, queue_shop, retry_buyer_notifications, signed_event
 from .support import open_ticket, receive_message
@@ -195,9 +199,144 @@ class ShopTests(TestCase):
         order = Order.objects.get()
         self.assertEqual((order.subtotal, order.product_discount, order.coupon_discount, order.total, order.coupon_code), (Decimal("3000"), Decimal("600"), Decimal("240"), Decimal("2160"), "SAVE10"))
         coupon.refresh_from_db()
-        self.assertEqual(coupon.uses, 1)
+        self.assertEqual(coupon.uses, 0)
+        self.assertTrue(order.coupon_reserved)
         self.assertEqual(self.checkout(coupon_code="save10").status_code, 400)
+        self.assertEqual(self.client.post(reverse("demo_pay", args=[order.access_token]), {"action": "paid"}).status_code, 302)
+        coupon.refresh_from_db()
+        order.refresh_from_db()
+        self.assertEqual(coupon.uses, 1)
+        self.assertFalse(order.coupon_reserved)
         self.assertEqual(Order.objects.count(), 1)
+
+    def test_unpaid_expiry_releases_counted_stock_and_coupon_exactly_once(self):
+        self.product.stock_quantity = 2
+        self.product.save(update_fields=["stock_quantity"])
+        coupon = Coupon.objects.create(code="HOLD", kind="fixed", value=100, max_uses=1)
+        self.assertEqual(self.checkout(coupon_code="HOLD").status_code, 302)
+        order = Order.objects.get()
+        self.assertEqual(order.items.get().inventory_state, OrderItem.Inventory.RESERVED)
+        self.assertEqual(self.checkout().status_code, 400)
+        Order.objects.filter(pk=order.pk).update(reservation_expires_at=timezone.now() - timedelta(seconds=1))
+        attempt = order.attempts.get()
+        raw = json.dumps({"event_id": "too-late", "attempt": str(attempt.reference), "status": "paid"}).encode()
+        self.assertEqual(self.client.post(reverse("payment_webhook"), raw, content_type="application/json",
+                                         HTTP_X_PAYMENT_SIGNATURE=signed_event(raw)).status_code, 403)
+        expire_reservations()
+        expire_reservations()
+        order.refresh_from_db()
+        coupon.refresh_from_db()
+        self.product.refresh_from_db()
+        self.assertEqual((order.status, coupon.uses, self.product.stock_quantity), ("cancelled", 0, 2))
+        self.assertEqual(order.items.get().inventory_state, OrderItem.Inventory.RELEASED)
+        self.assertEqual(self.checkout(coupon_code="HOLD").status_code, 302)
+
+    def test_expiry_waits_for_provider_payment_then_releases_on_decline(self):
+        self.product.stock_quantity = 2
+        self.product.save(update_fields=["stock_quantity"])
+        self.assertEqual(self.checkout().status_code, 302)
+        order = Order.objects.get()
+        Order.objects.filter(pk=order.pk).update(reservation_expires_at=timezone.now() - timedelta(seconds=1))
+        attempt = order.attempts.get()
+        attempt.gateway = "yookassa"
+        attempt.provider_id = "provider-test"
+        attempt.save(update_fields=["gateway", "provider_id"])
+        with patch("store.yookassa.sync_payment", return_value=False) as sync:
+            expire_reservations()
+            expire_reservations()
+        sync.assert_called_once()
+        order.refresh_from_db()
+        self.assertEqual(order.status, "new")
+        self.assertEqual(self.checkout().status_code, 400)
+        attempt.state = "declined"
+        attempt.save(update_fields=["state"])
+        expire_reservations()
+        order.refresh_from_db()
+        self.assertEqual(order.status, "cancelled")
+        self.assertEqual(self.checkout().status_code, 302)
+
+    def test_inventory_issuance_and_manual_partial_refund(self):
+        self.product.stock_quantity = 2
+        self.product.save(update_fields=["stock_quantity"])
+        coupon = Coupon.objects.create(code="PART", kind="fixed", value=100, max_uses=1)
+        self.assertEqual(self.checkout(payment_method="receipt", coupon_code="PART").status_code, 302)
+        order = Order.objects.get()
+        self.client.force_login(get_user_model().objects.create_superuser("manager", "test@example.com", "unused"))
+        url = reverse("admin:store_order_change", args=[order.pk])
+        def change_order(status):
+            return self.client.post(url, {"status": status, "track_number": "",
+                "items-TOTAL_FORMS": "1", "items-INITIAL_FORMS": "1",
+                "items-0-id": order.items.get().pk, "items-0-order": order.pk})
+        self.assertContains(change_order("delivered"), "Этот переход")
+        packing = change_order("packing")
+        self.assertEqual(packing.status_code, 302, (str(packing.context["adminform"].form.errors)
+            + str([formset.formset.errors for formset in packing.context["inline_admin_formsets"]])) if packing.status_code == 200 else None)
+        self.assertEqual(change_order("delivered").status_code, 302)
+        self.assertEqual(change_order("delivered").status_code, 302)
+        order.refresh_from_db()
+        coupon.refresh_from_db()
+        self.product.refresh_from_db()
+        self.assertEqual((order.payment_state, self.product.stock_quantity, coupon.uses), ("paid", 0, 1))
+        item = order.items.get()
+        self.assertEqual(item.inventory_state, OrderItem.Inventory.ISSUED)
+        entry = ReturnRequest.objects.create(order_item=item, quantity=1, reason="other", comment="Возврат")
+        url = reverse("admin:store_returnrequest_change", args=[entry.pk])
+        self.assertEqual(self.client.post(url, {"status": "approved"}).status_code, 302)
+        response = self.client.post(url, {"status": "closed", "restock": "on"})
+        self.assertContains(response, "Укажите номер чека")
+        data = {"status": "closed", "restock": "on", "refund_reference": "Документ 12"}
+        self.assertEqual(self.client.post(url, data).status_code, 302)
+        self.assertEqual(self.client.post(url, data).status_code, 302)
+        entry.refresh_from_db()
+        self.product.refresh_from_db()
+        self.assertEqual((entry.refund_amount, entry.refund_reference, self.product.stock_quantity),
+                         (Decimal("1450.00"), "Документ 12", 1))
+        self.assertIsNotNone(entry.refunded_at)
+
+    def test_stale_product_edit_does_not_restore_already_issued_stock(self):
+        from .admin import ProductStockForm
+
+        class StockOnlyForm(ProductStockForm):
+            class Meta:
+                model = Product
+                fields = ("stock_snapshot", "stock_quantity")
+
+        self.product.stock_quantity = 1
+        self.product.save(update_fields=["stock_quantity"])
+        stale = {"stock_snapshot": "2", "stock_quantity": "2"}
+        unchanged = StockOnlyForm(stale, instance=self.product)
+        self.assertTrue(unchanged.is_valid(), unchanged.errors)
+        self.assertEqual(unchanged.save().stock_quantity, 1)
+        stale["stock_quantity"] = "3"
+        edit = StockOnlyForm(stale, instance=self.product)
+        self.assertFalse(edit.is_valid())
+        self.assertIn("Остаток изменился", edit.errors["stock_quantity"][0])
+
+    def test_shopping_state_syncs_verified_web_and_mini_app_only(self):
+        url = reverse("shopping_state")
+        key = str(self.product.pk)
+        miniapp = Client()
+        web = Client()
+        session = web.session
+        session["telegram_id"] = 123
+        session.save()
+        headers = {"HTTP_X_TELEGRAM_INIT_DATA": telegram_data()}
+        self.assertEqual(self.client.get(url).status_code, 401)
+        self.assertEqual(miniapp.get(url, HTTP_X_TELEGRAM_INIT_DATA="invalid").status_code, 403)
+        data = {"action": "import", "cart": {key: 2}, "comparison": [self.product.slug]}
+        self.assertEqual(web.post(url, data, content_type="application/json").status_code, 200)
+        self.assertEqual(miniapp.get(url, **headers).json(), {
+            "cart": {key: 2}, "comparison": [{"slug": self.product.slug, "category": "tech"}],
+        })
+        self.assertEqual(miniapp.get(url, HTTP_X_TELEGRAM_INIT_DATA=telegram_data(456)).json()["cart"], {})
+        miniapp.post(url, {"action": "cart", "product": key, "delta": 1}, content_type="application/json", **headers)
+        self.assertEqual(web.get(url).json()["cart"], {key: 3})
+        self.assertEqual(self.checkout(tg_init_data=telegram_data()).status_code, 302)
+        self.assertEqual(web.get(url).json()["cart"], {key: 1})
+        response = miniapp.post(url, {"action": "compare-remove", "products": [self.product.slug]},
+                                content_type="application/json", **headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(web.get(url).json()["comparison"], [])
 
     def test_coupon_fixed_amount_minimum_and_expiry(self):
         coupon = Coupon.objects.create(code="fixed", kind="fixed", value=5000, min_total=3000)
@@ -1177,3 +1316,29 @@ class LoadRegressionTests(TestCase):
         self.assertEqual(len(second["favorites"]), 5)
         self.assertEqual(first["pagination"]["favorites"]["next"], 2)
         self.assertEqual(len({item["url"] for item in first["favorites"] + second["favorites"]}), 25)
+
+
+@override_settings(DEMO_PAYMENTS=True)
+class CheckoutConcurrencyTests(TransactionTestCase):
+    @skipUnlessDBFeature("has_select_for_update")
+    def test_two_checkouts_cannot_reserve_the_last_unit(self):
+        category = Category.objects.create(name="Тест", slug="stock-race")
+        product = Product.objects.create(category=category, name="Последний", slug="last-unit",
+                                         price=100, stock_quantity=1)
+        ready = Barrier(2)
+
+        def place_order():
+            try:
+                ready.wait(timeout=5)
+                return Client().post(reverse("checkout"), {
+                    "name": "Покупатель", "phone": "+7 900 123 45 67", "delivery": "pickup",
+                    "payment_method": "receipt", "consent": "on",
+                    "cart": json.dumps({str(product.pk): 1}), "checkout_key": str(uuid.uuid4()),
+                }).status_code
+            finally:
+                connections.close_all()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            requests = [pool.submit(place_order) for _ in range(2)]
+            self.assertCountEqual([request.result(timeout=10) for request in requests], [302, 400])
+        self.assertEqual(OrderItem.objects.get().inventory_state, OrderItem.Inventory.RESERVED)

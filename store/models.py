@@ -102,6 +102,8 @@ class Product(models.Model):
     discount_starts_at = models.DateTimeField("Скидка с", null=True, blank=True)
     discount_ends_at = models.DateTimeField("Скидка до", null=True, blank=True)
     availability = models.CharField("Наличие", max_length=12, choices=Availability.choices, default=Availability.IN_STOCK)
+    stock_quantity = models.PositiveIntegerField("Остаток на складе", null=True, blank=True,
+        help_text="Включая резервы. Пустое значение сохраняет прежний режим без количественного учёта.")
     is_visible = models.BooleanField("Показывать покупателям", default=True)
     is_featured = models.BooleanField("В подборке", default=False)
     delivery_min_days = models.PositiveSmallIntegerField("Доставка от, дней", default=2, blank=True)
@@ -270,6 +272,12 @@ class CustomerProfile(models.Model):
         return self.name
 
 
+class ShoppingState(models.Model):
+    telegram_id = models.BigIntegerField(unique=True)
+    cart = models.JSONField(default=dict)
+    comparison = models.JSONField(default=list)
+
+
 class ChatConversation(models.Model):
     left = models.ForeignKey(CustomerProfile, on_delete=models.CASCADE, related_name="chats_as_left")
     right = models.ForeignKey(CustomerProfile, on_delete=models.CASCADE, related_name="chats_as_right")
@@ -352,6 +360,8 @@ class Order(models.Model):
     coupon_discount = models.DecimalField("Скидка по промокоду, ₽", max_digits=11, decimal_places=2, default=0)
     coupon_code = models.CharField("Применённый промокод", max_length=32, blank=True)
     coupon = models.ForeignKey(Coupon, on_delete=models.PROTECT, null=True, blank=True, related_name="orders")
+    coupon_reserved = models.BooleanField(default=False, editable=False)
+    reservation_expires_at = models.DateTimeField("Резерв до", null=True, blank=True, db_index=True, editable=False)
     total = models.DecimalField("Итог, ₽", max_digits=11, decimal_places=2)
     status = models.CharField("Статус", max_length=12, choices=Status.choices, default=Status.NEW)
     payment_state = models.CharField("Состояние оплаты", max_length=12, choices=[("pending", "Ожидается"), ("paid", "Успешно"), ("declined", "Отказ"), ("receipt", "При получении")], default="pending")
@@ -362,7 +372,11 @@ class Order(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
-        indexes = [models.Index(fields=["is_demo", "created_at"], name="order_demo_created"), models.Index(fields=["telegram_id", "-created_at"], name="order_customer_created")]
+        indexes = [
+            models.Index(fields=["is_demo", "created_at"], name="order_demo_created"),
+            models.Index(fields=["telegram_id", "-created_at"], name="order_customer_created"),
+            models.Index(fields=["coupon"], condition=models.Q(coupon_reserved=True), name="order_reserved_coupon"),
+        ]
         verbose_name = "Заказ"
         verbose_name_plural = "Заказы"
 
@@ -378,14 +392,23 @@ class ShopAnalytics(Order):
 
 
 class OrderItem(models.Model):
+    class Inventory(models.TextChoices):
+        UNTRACKED = "untracked", "Без количественного учёта"
+        RESERVED = "reserved", "В резерве"
+        ISSUED = "issued", "Выдано"
+        RELEASED = "released", "Резерв снят"
+
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="items")
     product = models.ForeignKey(Product, on_delete=models.PROTECT)
     title = models.CharField("Название при покупке", max_length=160)
     quantity = models.PositiveSmallIntegerField("Количество")
+    inventory_state = models.CharField("Учёт остатка", max_length=10, choices=Inventory.choices,
+        default=Inventory.UNTRACKED, editable=False)
     unit_price = models.DecimalField("Цена при покупке", max_digits=10, decimal_places=2)
     list_unit_price = models.DecimalField("Цена до скидки", max_digits=10, decimal_places=2, default=0)
 
     class Meta:
+        indexes = [models.Index(fields=["product"], condition=models.Q(inventory_state="reserved"), name="item_reserved_product")]
         verbose_name = "Позиция заказа"
         verbose_name_plural = "Позиции заказа"
 
@@ -414,6 +437,8 @@ class PaymentAttempt(models.Model):
     gateway = models.CharField("Шлюз", max_length=12, default="demo")
     provider_id = models.CharField("ID платежа ЮKassa", max_length=80, blank=True, db_index=True)
     confirmation_token = models.CharField("Токен виджета", max_length=255, blank=True)
+    provider_started_at = models.DateTimeField(null=True, blank=True, editable=False)
+    provider_next_check_at = models.DateTimeField(default=timezone.now, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
 
@@ -506,6 +531,12 @@ class ReturnRequest(models.Model):
     comment = models.TextField("Комментарий", max_length=1000)
     status = models.CharField("Статус", max_length=20, choices=[("new", "Новая"), ("review", "На рассмотрении"), ("approved", "Одобрена"), ("rejected", "Отклонена"), ("closed", "Закрыта")], default="new")
     created_at = models.DateTimeField(auto_now_add=True)
+
+    refund_amount = models.DecimalField("Сумма возврата, ₽", max_digits=11, decimal_places=2,
+        null=True, blank=True, editable=False)
+    refund_reference = models.CharField("Номер документа о возврате", max_length=120, blank=True)
+    refunded_at = models.DateTimeField("Возврат подтверждён", null=True, blank=True, editable=False)
+    restock = models.BooleanField("Вернуть исправный товар на склад", default=False)
 
     class Meta:
         verbose_name = "Заявка на возврат"
